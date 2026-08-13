@@ -16,7 +16,7 @@ use deploy_backend::{BackendDeployRequest, ReleaseRecord};
 use events::{TaskLogger, TaskRegistry};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use terminal::TerminalManager;
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
@@ -584,7 +584,12 @@ fn free_local_port() -> Result<u16, String> {
 
 /// 启动系统远程桌面：用 mstsc /v 直连，避免未签名 .rdp 弹出「未知发布者」警告
 #[cfg(target_os = "windows")]
-fn launch_rdp_client(address: &str, width: Option<u32>, height: Option<u32>, fullscreen: bool) -> Result<(), String> {
+fn launch_rdp_client(
+    address: &str,
+    width: Option<u32>,
+    height: Option<u32>,
+    fullscreen: bool,
+) -> Result<std::process::Child, String> {
     let mut command = std::process::Command::new("mstsc");
     command.arg(format!("/v:{}", address));
     if fullscreen {
@@ -595,12 +600,16 @@ fn launch_rdp_client(address: &str, width: Option<u32>, height: Option<u32>, ful
     }
     command
         .spawn()
-        .map_err(|error| format!("启动 mstsc 失败: {}", error))?;
-    Ok(())
+        .map_err(|error| format!("启动 mstsc 失败: {}", error))
 }
 
 #[cfg(target_os = "macos")]
-fn launch_rdp_client(address: &str, width: Option<u32>, height: Option<u32>, fullscreen: bool) -> Result<(), String> {
+fn launch_rdp_client(
+    address: &str,
+    width: Option<u32>,
+    height: Option<u32>,
+    fullscreen: bool,
+) -> Result<std::process::Child, String> {
     // 需要安装 Microsoft Remote Desktop（新版名为 Windows App），从 App Store 免费获取
     let screen_mode = if fullscreen { 2 } else { 1 };
     let size_lines = match (width, height, fullscreen) {
@@ -625,8 +634,7 @@ fn launch_rdp_client(address: &str, width: Option<u32>, height: Option<u32>, ful
                 "打开远程桌面失败: {}（请确认已安装 Microsoft Remote Desktop / Windows App）",
                 error
             )
-        })?;
-    Ok(())
+        })
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -635,8 +643,18 @@ fn launch_rdp_client(
     _width: Option<u32>,
     _height: Option<u32>,
     _fullscreen: bool,
-) -> Result<(), String> {
+) -> Result<std::process::Child, String> {
     Err("当前系统暂不支持一键远程桌面".into())
+}
+
+/// mstsc 进程退出后通知前端；启动器若立刻退出则忽略（会话仍可能在）
+fn watch_rdp_process(app: AppHandle, server_id: String, mut child: std::process::Child) {
+    std::thread::spawn(move || {
+        let started = std::time::Instant::now();
+        let _ = child.wait();
+        if started.elapsed() < std::time::Duration::from_secs(2) { return; }
+        let _ = app.emit("rdp-closed", server_id);
+    });
 }
 
 /// 一键远程桌面：需要跳板时先建隧道再拉起 mstsc，直连则直接打开
@@ -659,7 +677,8 @@ async fn open_rdp(
     // 直连场景：不需要隧道
     let Some(_jump_id) = server.jump_server_id.clone() else {
         let address = format!("{}:3389", server.host);
-        launch_rdp_client(&address, width, height, fullscreen)?;
+        let child = launch_rdp_client(&address, width, height, fullscreen)?;
+        watch_rdp_process(app.clone(), server_id.clone(), child);
         return Ok(address);
     };
 
@@ -693,7 +712,8 @@ async fn open_rdp(
     };
 
     let address = format!("127.0.0.1:{}", local_port);
-    launch_rdp_client(&address, width, height, fullscreen)?;
+    let child = launch_rdp_client(&address, width, height, fullscreen)?;
+    watch_rdp_process(app, server_id, child);
     Ok(address)
 }
 

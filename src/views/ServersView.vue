@@ -1,9 +1,18 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { ArrowRight, Folder } from "@element-plus/icons-vue";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { api } from "../api";
-import { bus, OPEN_SSH_EVENT, sshConnectingId } from "../bus";
+import {
+  activeRdpServerIds,
+  activeSshServerIds,
+  bus,
+  markRdpActive,
+  markRdpInactive,
+  OPEN_SSH_EVENT,
+  sshConnectingId,
+} from "../bus";
 import OsIcons from "../components/OsIcons.vue";
 import GripDots from "../components/GripDots.vue";
 import {
@@ -33,6 +42,7 @@ const dropHint = ref<{
   place: "before" | "after" | "into";
 } | null>(null);
 let suppressNextGroupClick = false;
+let unlistenRdpClosed: UnlistenFn | null = null;
 
 const rdpPresets = [
   { value: "1080p", label: "1920 × 1080" },
@@ -75,7 +85,16 @@ const existingGroups = computed(() => {
   return Array.from(names);
 });
 
-onMounted(loadConfig);
+onMounted(async () => {
+  await loadConfig();
+  unlistenRdpClosed = await listen<string>("rdp-closed", (event) => {
+    markRdpInactive(event.payload);
+  });
+});
+
+onUnmounted(() => {
+  if (unlistenRdpClosed) unlistenRdpClosed();
+});
 
 async function loadConfig() {
   config.value = await api.getConfig();
@@ -111,6 +130,18 @@ function iconTone(server: ServerConfig) {
 
 function isWindowsServer(server: ServerConfig) {
   return effectiveOs(server) === "windows";
+}
+
+function isSshInUse(serverId: string) {
+  return activeSshServerIds.value.includes(serverId);
+}
+
+function isRdpInUse(serverId: string) {
+  return activeRdpServerIds.value.includes(serverId);
+}
+
+function isConnectingSsh(serverId: string) {
+  return sshConnectingId.value === serverId && !isSshInUse(serverId);
 }
 
 function toggleGroup(groupName: string) {
@@ -219,6 +250,7 @@ async function openRemoteDesktop(server: ServerConfig) {
   rdpLoadingId.value = server.id;
   try {
     const address = await api.openRdp(server.id, rdpLaunchOptions(server.rdpPreset));
+    markRdpActive(server.id);
     ElMessage.success(`远程桌面已启动（${address}），请在 mstsc 窗口输入账号密码`);
   } catch (error) {
     ElMessage.error(String(error));
@@ -456,7 +488,12 @@ function isDropHint(groupName: string, serverId: string | undefined, place: stri
               <OsIcons :os="effectiveOs(server)" :size="24" />
             </div>
             <div class="host-text">
-              <div class="host-name">{{ server.name }}</div>
+              <div class="host-name-line">
+                <div class="host-name">{{ server.name }}</div>
+                <el-tag v-if="isConnectingSsh(server.id)" size="small" type="warning" effect="plain">连接中</el-tag>
+                <el-tag v-if="isSshInUse(server.id)" size="small" type="success" effect="plain">SSH</el-tag>
+                <el-tag v-if="isRdpInUse(server.id)" size="small" type="primary" effect="plain">远程桌面</el-tag>
+              </div>
               <div class="host-sub">{{ serverSubtitle(server) }}</div>
             </div>
           </button>
@@ -767,11 +804,20 @@ function isDropHint(groupName: string, serverId: string | undefined, place: stri
 .host-text {
   min-width: 0;
 }
+.host-name-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 2px;
+  min-width: 0;
+}
+.host-name-line :deep(.el-tag) {
+  flex-shrink: 0;
+}
 .host-name {
   font-size: 15px;
   font-weight: 600;
   color: var(--el-text-color-primary);
-  margin-bottom: 2px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

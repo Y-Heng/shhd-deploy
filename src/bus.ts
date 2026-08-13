@@ -26,3 +26,22 @@ export const OPEN_SSH_EVENT = "open-ssh";
 
 /** 正在建立 SSH 连接的服务器 ID，防止连点开出多个会话 */
 export const sshConnectingId = ref("");
+
+/** 当前有未断开 SSH 会话的服务器 ID */
+export const activeSshServerIds = ref<string[]>([]);
+
+/** 本应用已拉起远程桌面、且会话仍可能在使用的服务器 ID */
+export const activeRdpServerIds = ref<string[]>([]);
+
+export function markRdpActive(serverId: string) {
+  if (activeRdpServerIds.value.includes(serverId)) return;
+  activeRdpServerIds.value = [...activeRdpServerIds.value, serverId];
+}
+
+export function markRdpInactive(serverId: string) {
+  activeRdpServerIds.value = activeRdpServerIds.value.filter((id) => id !== serverId);
+}
+
+export function syncActiveSshServerIds(serverIds: string[]) {
+  activeSshServerIds.value = serverIds;
+}

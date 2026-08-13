@@ -7,7 +7,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { api } from '../api'
-import { bus, OPEN_SSH_EVENT, sshConnectingId } from '../bus'
+import { bus, OPEN_SSH_EVENT, sshConnectingId, syncActiveSshServerIds } from '../bus'
 import SftpPanel from '../components/SftpPanel.vue'
 import GripDots from '../components/GripDots.vue'
 import { dropPlaceByX, elementFromPointIgnoringDrag, isDropPlaceholder } from '../composables/groupedDragSort'
@@ -119,6 +119,14 @@ async function reloadConfig() {
 
 function getActiveSession(): TermSession | undefined {
   return sessions.value.find(item => item.sessionId === activeSessionId.value)
+}
+
+function syncActiveSshServers() {
+  const serverIds = new Set<string>()
+  for (const session of sessions.value) {
+    if (!session.closed) serverIds.add(session.serverId)
+  }
+  syncActiveSshServerIds(Array.from(serverIds))
 }
 
 async function copySelection() {
@@ -281,6 +289,7 @@ async function openSessionForServer(serverId: string) {
       fitAddon,
       closed: false
     })
+    syncActiveSshServers()
     activeSessionId.value = sessionId
 
     await nextTick()
@@ -312,6 +321,7 @@ async function closeSession(sessionId: string) {
   await api.terminalClose(session.sessionId)
   session.terminal.dispose()
   sessions.value.splice(index, 1)
+  syncActiveSshServers()
   sftpPanelMap.delete(sessionId)
   const stillUsed = sessions.value.some(item => item.serverId === serverId)
   if (!stillUsed) await api.sftpDisconnect(serverId)
@@ -634,6 +644,7 @@ onMounted(async () => {
       if (!session || session.closed) return
       session.closed = true
       session.terminal.write('\r\n\x1b[31m[会话已断开]\x1b[0m\r\n')
+      syncActiveSshServers()
     })
   )
 
@@ -654,6 +665,7 @@ onUnmounted(() => {
     session.terminal.dispose()
     api.sftpDisconnect(session.serverId)
   }
+  syncActiveSshServerIds([])
 })
 </script>
 
