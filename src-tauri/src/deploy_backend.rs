@@ -596,7 +596,7 @@ pub async fn run_backend_deploy(
     // 第 2 步：本地压缩
     logger.progress(5.0, "压缩产物");
     let temp_dir = std::env::temp_dir()
-        .join("jy-deploy")
+        .join("shhd-deploy")
         .join(uuid::Uuid::new_v4().to_string());
     std::fs::create_dir_all(&temp_dir)?;
     let mut zip_paths: Vec<(BackendProject, PathBuf)> = Vec::new();

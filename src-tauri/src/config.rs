@@ -381,10 +381,10 @@ pub fn validate_server_hosts(config: &AppConfig, server_id: &str) -> Result<(), 
     check(config, server_id, 0)
 }
 
-/// 配置文件所在目录（%APPDATA%\jy-deploy）
+/// 配置文件所在目录（%APPDATA%\shhd-deploy）
 pub fn config_dir() -> PathBuf {
     let base_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-    base_dir.join("jy-deploy")
+    base_dir.join("shhd-deploy")
 }
 
 pub fn config_file_path() -> PathBuf {

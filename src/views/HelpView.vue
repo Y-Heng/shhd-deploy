@@ -1,19 +1,19 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
-import { api } from "../api";
+import { onMounted, ref } from 'vue'
+import { api } from '../api'
 
 // embedded 为 true 时隐藏大标题（嵌在设置弹窗里）
 const { embedded = false } = defineProps<{
-  embedded?: boolean;
-}>();
+  embedded?: boolean
+}>()
 
-const activeSections = ref(["start"]);
-const mcpPort = ref(17423);
+const activeSections = ref(['start'])
+const mcpPort = ref(17423)
 
 onMounted(async () => {
-  const config = await api.getConfig();
-  mcpPort.value = config.mcp.port;
-});
+  const config = await api.getConfig()
+  mcpPort.value = config.mcp.port
+})
 </script>
 
 <template>
@@ -24,9 +24,7 @@ onMounted(async () => {
     <el-collapse v-model="activeSections">
       <el-collapse-item title="一、这是什么 / 快速开始" name="start">
         <div class="help-body">
-          <p>
-            本工具把日常运维的四件事集中到一个软件里：<b>SSH 隧道</b>、<b>后端部署</b>（Windows 双机负载）、<b>前端部署</b>（nginx 静态资源）、<b>Docker 部署</b>，另附 SSH 终端、SFTP 文件管理和一键远程桌面。所有流量走 SSH 加密，内网 Windows 服务器经 Linux 跳板机访问。
-          </p>
+          <p>本工具把日常运维的四件事集中到一个软件里：<b>SSH 隧道</b>、<b>后端部署</b>（Windows 双机负载）、<b>前端部署</b>（nginx 静态资源）、<b>Docker 部署</b>，另附 SSH 终端、SFTP 文件管理和一键远程桌面。所有流量走 SSH 加密，内网 Windows 服务器经 Linux 跳板机访问。</p>
           <p><b>第一次使用（三步）：</b></p>
           <ol>
             <li>找同事把配置导给你：对方在「设置 → 导出配置」生成 JSON 文件，你在「设置 → 导入配置」一键导入（包含服务器、隧道、部署映射全部内容）。</li>
@@ -41,9 +39,7 @@ onMounted(async () => {
           <ul>
             <li>服务器可按分组管理；双击分组名称即可改名（该组下全部条目的分组字段会一起更新）。</li>
             <li>「未分组」不能改名；若要归入某组，请编辑条目并选择或新建分组。</li>
-            <li>
-              <b>Windows 服务器端口填 SSH 端口（默认 22）</b>，不是远程桌面 3389。测试连接走 SSH，需已开启 OpenSSH Server。
-            </li>
+            <li><b>Windows 服务器端口填 SSH 端口（默认 22）</b>，不是远程桌面 3389。测试连接走 SSH，需已开启 OpenSSH Server。</li>
           </ul>
         </div>
       </el-collapse-item>
@@ -67,15 +63,9 @@ onMounted(async () => {
         <div class="help-body">
           <ul>
             <li><b>SSH 终端</b>：选服务器 → 新建会话，支持多标签。连 Windows 服务器默认进 cmd，输入 <code>powershell</code> 回车可切换。</li>
-            <li>
-              <b>SFTP 文件管理</b>：双栏浏览本地与远端；支持拖拽上传/下载；右键菜单可新建、重命名、删除、下载等。
-            </li>
-            <li>
-              <b>路径同步</b>：SSH 终端里 <code>cd</code> 切换目录后，同一会话的 SFTP 远端路径会跟着更新；在 SFTP 进入目录也会尽量与终端工作目录对齐。
-            </li>
-            <li>
-              <b>远程桌面</b>：在「服务器」页 Windows 行点「远程桌面」。分辨率在编辑服务器时设置，连接时直接使用；经跳板机建隧道并拉起 mstsc。你只需在 mstsc 窗口输入 Windows 账号密码。
-            </li>
+            <li><b>SFTP 文件管理</b>：双栏浏览本地与远端；支持拖拽上传/下载；右键菜单可新建、重命名、删除、下载等。</li>
+            <li><b>路径同步</b>：SSH 终端里 <code>cd</code> 切换目录后，同一会话的 SFTP 远端路径会跟着更新；在 SFTP 进入目录也会尽量与终端工作目录对齐。</li>
+            <li><b>远程桌面</b>：在「服务器」页 Windows 行点「远程桌面」。分辨率在编辑服务器时设置，连接时直接使用；经跳板机建隧道并拉起 mstsc。你只需在 mstsc 窗口输入 Windows 账号密码。</li>
           </ul>
         </div>
       </el-collapse-item>
@@ -113,28 +103,27 @@ onMounted(async () => {
         <div class="help-body">
           <p>
             开启后，Cursor 等 AI 客户端可以直接调用本工具：AI 构建完包 → 调用
-            <code>backend_deploy</code>/<code>frontend_deploy</code> 上传部署 → 轮询
-            <code>get_task_status</code> 拿结果。
+            <code>backend_deploy</code>/<code>frontend_deploy</code> 上传部署 → 轮询 <code>get_task_status</code> 拿结果。
           </p>
           <p><b>接入步骤：</b></p>
           <ol>
             <li>「设置 → MCP 服务」打开开关，选权限级别，保存。</li>
             <li>复制接入配置，粘贴到 Cursor 的 <code>mcp.json</code>：</li>
           </ol>
-          <pre class="help-code">{
+          <pre class="help-code">
+{
   "mcpServers": {
-    "jy-deploy": { "url": "http://127.0.0.1:{{ mcpPort }}/mcp" }
+    "shhd-deploy": { "url": "http://127.0.0.1:{{ mcpPort }}/mcp" }
   }
-}</pre>
+}</pre
+          >
           <p><b>权限级别：</b></p>
           <ul>
             <li><b>只读</b>：AI 只能查配置、发布历史、任务状态。</li>
             <li><b>仅中转（推荐）</b>：AI 能传包到中转，但<b>替换线上必须人在软件里点</b>，兼顾效率与安全。</li>
             <li><b>完全访问</b>：AI 可替换线上、回滚、Docker 部署，谨慎开启。</li>
           </ul>
-          <p>
-            示例提示词：「发布 client 项目并上传到中转：先执行发布脚本，然后用 jy-deploy 的 backend_deploy（mode=stage，releaseName=今天日期-本次功能名），最后轮询任务结果告诉我。」
-          </p>
+          <p>示例提示词：「发布 client 项目并上传到中转：先执行发布脚本，然后用 shhd-deploy 的 backend_deploy（mode=stage，releaseName=今天日期-本次功能名），最后轮询任务结果告诉我。」</p>
           <p class="help-note">服务只监听本机 127.0.0.1，局域网内其他电脑无法访问。</p>
         </div>
       </el-collapse-item>

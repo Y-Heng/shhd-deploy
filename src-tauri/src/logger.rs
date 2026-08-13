@@ -10,7 +10,7 @@ use std::sync::OnceLock;
 static LOG_ENABLED: AtomicBool = AtomicBool::new(false);
 static LOG_DIR: OnceLock<PathBuf> = OnceLock::new();
 
-/// 诊断日志目录（%APPDATA%/jy-deploy/logs/）
+/// 诊断日志目录（%APPDATA%/shhd-deploy/logs/）
 pub fn log_dir() -> PathBuf {
     LOG_DIR
         .get_or_init(|| config_dir().join("logs"))

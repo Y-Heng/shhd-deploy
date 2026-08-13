@@ -122,7 +122,7 @@ async fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<Value,
             Ok(json!({
                 "protocolVersion": protocol_version,
                 "capabilities": { "tools": {} },
-                "serverInfo": { "name": "jy-deploy", "version": "0.1.0" },
+                "serverInfo": { "name": "shhd-deploy", "version": "0.1.0" },
                 "instructions": "部署工具 MCP 服务。典型流程：1) list_config 查看可部署目标；2) 本地构建/发布产物；3) backend_deploy 或 frontend_deploy 发起部署（mode=stage 仅上传中转，不动线上）；4) get_task_status 轮询任务进度直到 success/failed。部署工具返回 taskId，务必轮询确认结果。"
             }))
         }

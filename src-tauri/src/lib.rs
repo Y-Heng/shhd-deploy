@@ -613,7 +613,7 @@ fn launch_rdp_client(address: &str, width: Option<u32>, height: Option<u32>, ful
     let rdp_content = format!(
         "full address:s:{address}\nprompt for credentials:i:1\nscreen mode id:i:{screen_mode}\n{size_lines}"
     );
-    let file_name = format!("jy-deploy-{}.rdp", address.replace([':', '.'], "-"));
+    let file_name = format!("shhd-deploy-{}.rdp", address.replace([':', '.'], "-"));
     let rdp_path = std::env::temp_dir().join(file_name);
     std::fs::write(&rdp_path, rdp_content)
         .map_err(|error| format!("写入 .rdp 文件失败: {}", error))?;
@@ -703,7 +703,7 @@ pub fn run() {
     logger::init(app_config.logging.enabled);
     if app_config.logging.enabled {
         logger::append_log(&format!(
-            "应用启动 jy-deploy v{}",
+            "应用启动 shhd-deploy v{}",
             env!("CARGO_PKG_VERSION")
         ));
     }

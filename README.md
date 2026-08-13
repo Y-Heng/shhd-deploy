@@ -20,7 +20,7 @@
 ```json
 {
   "mcpServers": {
-    "jy-deploy": { "url": "http://127.0.0.1:17423/mcp" }
+    "shhd-deploy": { "url": "http://127.0.0.1:17423/mcp" }
   }
 }
 ```
@@ -116,4 +116,4 @@ New-NetFirewallRule -Name sshd-lan -DisplayName 'OpenSSH Server (LAN only)' `
 
 - 所有流量走 SSH 加密通道；Windows 服务器经 Linux 跳板访问，不暴露公网。
 - 主机密钥采用首次信任（TOFU），指纹变化会拒绝连接并提示，防中间人攻击。
-- 密码保存在本机 `%APPDATA%\jy-deploy\config.json`，建议尽量改用私钥认证。
+- 密码保存在本机 `%APPDATA%\shhd-deploy\config.json`，建议尽量改用私钥认证。

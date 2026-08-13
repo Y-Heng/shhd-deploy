@@ -1,5 +1,5 @@
 [package]
-name = "jy-deploy"
+name = "shhd-deploy"
 version = "0.1.0"
 description = "简悦部署运维工具：隧道 / 后端部署 / 前端部署 / Docker 部署"
 edition = "2021"
