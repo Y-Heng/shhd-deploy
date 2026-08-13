@@ -1,0 +1,218 @@
+// 与 Rust 侧 config.rs 对应的类型定义
+
+export type OsType = "linux" | "windows";
+
+/** SSH 探测到的系统类型 */
+export type DetectedOs = "windows" | "ubuntu" | "centos" | "linux";
+
+export interface AuthConfig {
+  method: "password" | "key";
+  password?: string;
+  keyPath?: string;
+  passphrase?: string | null;
+}
+
+export interface ServerConfig {
+  id: string;
+  name: string;
+  os: OsType;
+  host: string;
+  port: number;
+  username: string;
+  auth: AuthConfig;
+  jumpServerId?: string | null;
+  group?: string | null;
+  /** SSH 连接/测试后探测到的系统类型 */
+  detectedOs?: DetectedOs | string | null;
+  /** 远程桌面分辨率预设：1080p / 900p / 768p / 720p / fullscreen / default */
+  rdpPreset?: string | null;
+  /** 该服务器专属的远端快捷目录 */
+  sftpRemoteShortcuts?: string[];
+  /** 该服务器专属的本地快捷目录 */
+  sftpLocalShortcuts?: string[];
+}
+
+export interface TunnelConfig {
+  id: string;
+  name: string;
+  viaServerId: string;
+  localPort: number;
+  remoteHost: string;
+  remotePort: number;
+  autoStart: boolean;
+  group?: string | null;
+}
+
+export interface TermDataPayload {
+  sessionId: string;
+  data: string;
+}
+
+export interface TermClosedPayload {
+  sessionId: string;
+}
+
+export interface BackendProject {
+  id: string;
+  name: string;
+  localBinDir: string;
+  remoteAppDir: string;
+  healthCheckUrl?: string | null;
+  healthCheckRetries: number;
+  healthCheckDelaySecs: number;
+}
+
+export type CopyMode = "smb" | "upload";
+
+/** full=上传并替换；stage=仅上传中转；replace=从中转替换 */
+export type DeployMode = "full" | "stage" | "replace";
+
+export interface BackendGroup {
+  id: string;
+  name: string;
+  /** 组内服务器列表（第一台作为上传中转与滚动起点） */
+  serverIds: string[];
+  /** 兼容旧配置的主/备字段 */
+  primaryServerId?: string | null;
+  secondaryServerId?: string | null;
+  stagingDir: string;
+  backupDir: string;
+  copyMode: CopyMode;
+  projects: BackendProject[];
+}
+
+export interface FrontendTarget {
+  id: string;
+  name: string;
+  serverIds: string[];
+  localDir: string;
+  remoteDir: string;
+  /** 自定义中转目录，留空默认 <remoteDir>-staging */
+  stagingDir?: string | null;
+  deleteExtraneous: boolean;
+}
+
+export interface DockerTarget {
+  id: string;
+  name: string;
+  serverId: string;
+  workDir: string;
+  commands: string[];
+  group?: string | null;
+}
+
+/** MCP 权限级别 */
+export type McpPermission = "readonly" | "stage" | "full";
+
+export interface McpConfig {
+  enabled: boolean;
+  port: number;
+  permission: McpPermission;
+  allowedBackendGroupIds?: string[] | null;
+  allowedFrontendTargetIds?: string[] | null;
+  allowedDockerTargetIds?: string[] | null;
+}
+
+/** 诊断日志配置（默认关闭） */
+export interface LoggingConfig {
+  enabled: boolean;
+  level?: string;
+}
+
+/** 终端常用命令（类似 Termius Snippets） */
+export interface QuickCommand {
+  id: string;
+  name: string;
+  command: string;
+  /** 分组名，空则归入「未分组」 */
+  group?: string | null;
+}
+
+/** SFTP 远端目录条目 */
+export interface SftpEntry {
+  name: string;
+  path: string;
+  isDir: boolean;
+  size: number;
+  mtime: number;
+  hidden?: boolean;
+}
+
+/** 本地目录条目（与 SftpEntry 字段对齐） */
+export interface LocalDirEntry {
+  name: string;
+  path: string;
+  isDir: boolean;
+  size: number;
+  mtime: number;
+  hidden?: boolean;
+}
+
+export interface SftpProgressPayload {
+  transferId: string;
+  fileName: string;
+  transferred: number;
+  total: number;
+  done: boolean;
+  fileIndex: number;
+  fileCount: number;
+}
+
+/** 本地待上传文件 */
+export interface LocalFileEntry {
+  localPath: string;
+  relativePath: string;
+}
+
+export interface AppConfig {
+  servers: ServerConfig[];
+  tunnels: TunnelConfig[];
+  backendGroups: BackendGroup[];
+  frontendTargets: FrontendTarget[];
+  dockerTargets: DockerTarget[];
+  mcp: McpConfig;
+  quickCommands?: QuickCommand[];
+  logging?: LoggingConfig;
+  /** SFTP 公共远端快捷目录 */
+  sftpShortcuts?: string[];
+  /** SFTP 公共本地快捷目录 */
+  sftpLocalShortcuts?: string[];
+}
+
+export interface TunnelStatusInfo {
+  id: string;
+  state: "stopped" | "connecting" | "active" | "reconnecting" | "error";
+  message: string;
+  activeConnections: number;
+  totalReconnects: number;
+}
+
+export interface ReleaseRecord {
+  id: string;
+  releaseName: string;
+  groupId: string;
+  groupName: string;
+  projectIds: string[];
+  serverIds: string[];
+  createdAt: string;
+  status: string;
+}
+
+export interface TaskLogPayload {
+  taskId: string;
+  level: "info" | "warn" | "error" | "success";
+  message: string;
+  ts: string;
+}
+
+export interface TaskStatePayload {
+  taskId: string;
+  state: "running" | "success" | "failed" | "cancelled";
+  message: string;
+}
+
+export interface TaskProgressPayload {
+  taskId: string;
+  percent: number;
+  step: string;
+}

@@ -1,0 +1,284 @@
+/* 与 SSH 终端色板对齐的全局暗色主题 */
+:root {
+  --app-bg: #0f1218;
+  --app-panel: #151a22;
+  --app-panel-2: #1a2130;
+  --app-border: #2a3344;
+  --app-text: #d7dde8;
+  --app-muted: #8b95a8;
+  --app-accent: #3dd68c;
+  --app-accent-dim: rgba(61, 214, 140, 0.15);
+  --app-radius: 8px;
+  --app-radius-lg: 10px;
+}
+
+html.dark {
+  --el-color-primary: #3dd68c;
+  --el-color-primary-light-3: #6ae0a8;
+  --el-color-primary-light-5: #8ee7bc;
+  --el-color-primary-light-7: #b3efd0;
+  --el-color-primary-light-8: #c6f3dc;
+  --el-color-primary-light-9: #daf7e8;
+  --el-color-primary-dark-2: #31ab70;
+
+  --el-bg-color: #151a22;
+  --el-bg-color-page: #0f1218;
+  --el-bg-color-overlay: #1a2130;
+
+  --el-border-color: #2a3344;
+  --el-border-color-light: #2a3344;
+  --el-border-color-lighter: #2a3344;
+  --el-border-color-extra-light: #323c50;
+  --el-border-color-dark: #232b3a;
+  --el-border-color-darker: #1c2330;
+
+  --el-text-color-primary: #d7dde8;
+  --el-text-color-regular: #c2cad8;
+  --el-text-color-secondary: #8b95a8;
+  --el-text-color-placeholder: #6b7588;
+  --el-text-color-disabled: #5a6476;
+
+  --el-fill-color: #1a2130;
+  --el-fill-color-light: #1e2636;
+  --el-fill-color-lighter: #232c3e;
+  --el-fill-color-extra-light: #283246;
+  --el-fill-color-blank: #151a22;
+  --el-fill-color-dark: #161c28;
+  --el-fill-color-darker: #12171f;
+
+  --el-mask-color: rgba(15, 18, 24, 0.8);
+  --el-mask-color-extra-light: rgba(15, 18, 24, 0.3);
+
+  --el-box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  --el-box-shadow-light: 0 2px 10px rgba(0, 0, 0, 0.28);
+  --el-box-shadow-lighter: 0 1px 6px rgba(0, 0, 0, 0.22);
+  --el-box-shadow-dark: 0 8px 24px rgba(0, 0, 0, 0.45);
+
+  --el-menu-bg-color: #151a22;
+  --el-menu-hover-bg-color: #1a2130;
+  --el-menu-active-color: #3dd68c;
+  --el-menu-text-color: #8b95a8;
+  --el-menu-hover-text-color: #d7dde8;
+  --el-menu-border-color: #2a3344;
+
+  --el-border-radius-base: 8px;
+  --el-border-radius-small: 6px;
+  --el-border-radius-round: 20px;
+
+  color-scheme: dark;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+  background: var(--app-bg);
+  color: var(--app-text);
+}
+
+/* Element Plus：卡片 / 表格 / 输入 / 对话框 / 折叠 / 标签页 统一有边框 */
+html.dark .el-card {
+  --el-card-border-color: var(--app-border);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  background: var(--app-panel);
+  overflow: hidden;
+}
+
+html.dark .el-card__header {
+  border-bottom: 1px solid var(--app-border);
+  background: var(--app-panel);
+}
+
+html.dark .el-card__body {
+  background: var(--app-panel);
+}
+
+html.dark .el-table {
+  --el-table-border-color: var(--app-border);
+  --el-table-header-bg-color: var(--app-panel-2);
+  --el-table-bg-color: var(--app-panel);
+  --el-table-tr-bg-color: var(--app-panel);
+  --el-table-row-hover-bg-color: var(--app-panel-2);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  overflow: hidden;
+  background: var(--app-panel);
+}
+
+html.dark .el-table th.el-table__cell {
+  background: var(--app-panel-2);
+  border-bottom: 1px solid var(--app-border);
+}
+
+html.dark .el-table td.el-table__cell {
+  border-bottom: 1px solid var(--app-border);
+}
+
+html.dark .el-table--border .el-table__inner-wrapper::after,
+html.dark .el-table--border::after,
+html.dark .el-table--border::before,
+html.dark .el-table__inner-wrapper::before {
+  background-color: var(--app-border);
+}
+
+html.dark .el-input__wrapper,
+html.dark .el-textarea__inner,
+html.dark .el-select__wrapper,
+html.dark .el-input-number .el-input__wrapper {
+  background-color: var(--app-bg);
+  box-shadow: 0 0 0 1px var(--app-border) inset;
+  border-radius: var(--app-radius);
+}
+
+html.dark .el-input__wrapper:hover,
+html.dark .el-select__wrapper:hover {
+  box-shadow: 0 0 0 1px var(--el-border-color-extra-light) inset;
+}
+
+html.dark .el-input__wrapper.is-focus,
+html.dark .el-select__wrapper.is-focused,
+html.dark .el-textarea__inner:focus {
+  box-shadow: 0 0 0 1px var(--app-accent) inset !important;
+}
+
+html.dark .el-dialog {
+  --el-dialog-border-radius: var(--app-radius-lg);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-lg);
+  background: var(--app-panel);
+  overflow: hidden;
+}
+
+html.dark .el-dialog__header {
+  border-bottom: 1px solid var(--app-border);
+  margin-right: 0;
+  padding: 18px 20px 14px;
+}
+
+html.dark .el-dialog__headerbtn {
+  top: 18px;
+  right: 16px;
+}
+
+html.dark .el-dialog__title {
+  line-height: 1.4;
+}
+
+html.dark .el-dialog__body {
+  padding: 16px 20px;
+}
+
+html.dark .el-dialog__footer {
+  border-top: 1px solid var(--app-border);
+  padding: 14px 20px 18px;
+}
+
+/* 分组标题内联重命名 */
+.group-rename-input {
+  flex: 1;
+  min-width: 80px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--app-accent);
+  border-radius: 6px;
+  background: var(--app-bg);
+  color: var(--app-text);
+  font-size: 13px;
+  font-weight: 600;
+  outline: none;
+}
+
+html.dark .el-collapse {
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  overflow: hidden;
+  background: var(--app-panel);
+}
+
+html.dark .el-collapse-item__header {
+  background: var(--app-panel);
+  border-bottom: 1px solid var(--app-border);
+  color: var(--app-text);
+}
+
+html.dark .el-collapse-item__wrap {
+  background: var(--app-panel);
+  border-bottom: 1px solid var(--app-border);
+}
+
+html.dark .el-collapse-item__content {
+  padding: 12px 16px;
+}
+
+html.dark .el-collapse-item:last-child .el-collapse-item__header,
+html.dark .el-collapse-item:last-child .el-collapse-item__wrap {
+  border-bottom: none;
+}
+
+html.dark .el-tabs {
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  background: var(--app-panel);
+  padding: 0 12px 12px;
+}
+
+html.dark .el-tabs__header {
+  margin-bottom: 12px;
+}
+
+html.dark .el-tabs__nav-wrap::after {
+  background-color: var(--app-border);
+}
+
+html.dark .el-alert {
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+}
+
+html.dark .el-button {
+  border-radius: var(--app-radius);
+}
+
+html.dark .el-tag {
+  border-radius: 6px;
+}
+
+html.dark .el-radio-button__inner {
+  border-color: var(--app-border);
+  background: var(--app-bg);
+}
+
+html.dark .el-checkbox-button__inner {
+  border-color: var(--app-border);
+  background: var(--app-bg);
+}
+
+/* 拖拽手柄：默认隐藏，悬停行/分组时显示 */
+.drag-grip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  color: var(--el-text-color-placeholder, #6b7588);
+  cursor: grab;
+  flex-shrink: 0;
+  opacity: 0;
+  user-select: none;
+  touch-action: none;
+  transition: opacity 0.12s;
+}
+.drag-grip:active {
+  cursor: grabbing;
+}
+.group-header:hover .drag-grip,
+.host-row:hover .drag-grip,
+.tunnel-row:hover .drag-grip,
+.docker-card-wrap:hover .drag-grip,
+.session-tab:hover .drag-grip,
+.is-dragging > .drag-grip,
+.is-dragging .drag-grip {
+  opacity: 1;
+}
