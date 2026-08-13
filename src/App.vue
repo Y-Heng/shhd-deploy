@@ -50,10 +50,6 @@ onUnmounted(() => bus.off(OPEN_SSH_EVENT, onOpenSsh));
 <template>
   <el-container class="app-root">
     <el-aside width="168px" class="app-aside">
-      <div class="app-brand">
-        <img class="app-logo" src="./assets/app-icon.png" alt="部署工具" />
-        <span class="app-brand-name">部署工具</span>
-      </div>
       <el-menu
         :default-active="activeKey"
         class="app-menu"
@@ -88,30 +84,6 @@ onUnmounted(() => bus.off(OPEN_SSH_EVENT, onOpenSsh));
   border-right: 1px solid var(--app-border);
   background: var(--app-panel);
   padding: 8px 8px 0;
-}
-
-.app-brand {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 8px 12px;
-}
-
-.app-logo {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  object-fit: cover;
-  flex-shrink: 0;
-}
-
-.app-brand-name {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--app-text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .app-menu {

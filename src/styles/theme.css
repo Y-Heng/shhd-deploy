@@ -282,3 +282,21 @@ html.dark .el-checkbox-button__inner {
 .is-dragging .drag-grip {
   opacity: 1;
 }
+
+/* 拖拽落点占位：与列表同宽，高度至少 30px，主题色虚线框 */
+.drop-placeholder {
+  display: block;
+  width: 100%;
+  min-height: 30px;
+  box-sizing: border-box;
+  border: 2px dashed var(--app-accent);
+  border-radius: var(--app-radius);
+  background: var(--app-accent-dim);
+  flex-shrink: 0;
+}
+.drop-placeholder.is-tab {
+  width: 88px;
+  min-width: 88px;
+  height: 100%;
+  align-self: stretch;
+}

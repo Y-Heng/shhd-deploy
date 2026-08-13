@@ -10,6 +10,7 @@ import {
   bindPointerDrag,
   dropPlaceByY,
   elementFromPointIgnoringDrag,
+  isDropPlaceholder,
   moveGroupedItem,
   reorderGroups,
 } from "../composables/groupedDragSort";
@@ -314,6 +315,7 @@ function onServerGripDown(server: ServerConfig, event: PointerEvent) {
 
 function onListPointerMove(clientX: number, clientY: number) {
   const hit = elementFromPointIgnoringDrag(clientX, clientY);
+  if (isDropPlaceholder(hit)) return;
   if (draggingGroup.value) {
     const groupElement = hit instanceof Element ? hit.closest(".server-group") : null;
     if (!(groupElement instanceof HTMLElement) || !groupElement.dataset.groupName) return;
@@ -389,15 +391,16 @@ function isDropHint(groupName: string, serverId: string | undefined, place: stri
       <el-button type="primary" @click="openAddDialog">添加服务器</el-button>
     </div>
 
+    <template v-for="[groupName, servers] in groupedServers" :key="groupName">
     <div
-      v-for="[groupName, servers] in groupedServers"
-      :key="groupName"
+      v-if="isDropHint(groupName, undefined, 'before')"
+      class="drop-placeholder"
+    />
+    <div
       class="server-group"
       :data-group-name="groupName"
       :class="{
         'is-dragging': draggingGroup === groupName,
-        'is-drop-before': isDropHint(groupName, undefined, 'before'),
-        'is-drop-after': isDropHint(groupName, undefined, 'after'),
         'is-drop-into': isDropHint(groupName, undefined, 'into'),
       }"
     >
@@ -434,17 +437,16 @@ function isDropHint(groupName: string, serverId: string | undefined, place: stri
         </span>
       </div>
       <div v-show="isGroupExpanded(groupName)" class="host-list">
+        <template v-for="server in servers" :key="server.id">
         <div
-          v-for="server in servers"
-          :key="server.id"
+          v-if="isDropHint(groupName, server.id, 'before')"
+          class="drop-placeholder"
+        />
+        <div
           class="host-row"
           :data-group-name="groupName"
           :data-server-id="server.id"
-          :class="{
-            'is-dragging': draggingServerId === server.id,
-            'is-drop-before': isDropHint(groupName, server.id, 'before'),
-            'is-drop-after': isDropHint(groupName, server.id, 'after'),
-          }"
+          :class="{ 'is-dragging': draggingServerId === server.id }"
           @mouseenter="hoveredServerId = server.id"
           @mouseleave="hoveredServerId = ''"
           @dblclick="connectSsh(server)"
@@ -494,8 +496,22 @@ function isDropHint(groupName: string, serverId: string | undefined, place: stri
             <GripDots />
           </span>
         </div>
+        <div
+          v-if="isDropHint(groupName, server.id, 'after')"
+          class="drop-placeholder"
+        />
+        </template>
+        <div
+          v-if="isDropHint(groupName, undefined, 'into')"
+          class="drop-placeholder"
+        />
       </div>
     </div>
+    <div
+      v-if="isDropHint(groupName, undefined, 'after')"
+      class="drop-placeholder"
+    />
+    </template>
 
     <el-dialog
       v-model="dialogVisible"
@@ -636,16 +652,8 @@ function isDropHint(groupName: string, serverId: string | undefined, place: stri
 .host-row.is-dragging {
   opacity: 0.55;
 }
-.server-group.is-drop-before,
-.host-row.is-drop-before {
-  box-shadow: inset 0 2px 0 #3dd68c;
-}
-.server-group.is-drop-after,
-.host-row.is-drop-after {
-  box-shadow: inset 0 -2px 0 #3dd68c;
-}
 .server-group.is-drop-into {
-  outline: 1px dashed #3dd68c;
+  outline: 1px dashed var(--app-accent, #3dd68c);
   outline-offset: -2px;
 }
 .group-header {

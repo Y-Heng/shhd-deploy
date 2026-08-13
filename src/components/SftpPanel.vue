@@ -975,10 +975,12 @@ async function beginUploadSession(fileCount: number) {
 
 async function uploadEntries(fileEntries: LocalFileEntry[]) {
   if (!fileEntries.length) {
-    ElMessage.warning("没有可上传的文件");
+    ElMessage.warning("没有可上传的文件（已跳过系统或占用中的文件）");
     return;
   }
   await beginUploadSession(fileEntries.length);
+  let successCount = 0;
+  const failedNames: string[] = [];
   try {
     for (let index = 0; index < fileEntries.length; index++) {
       const entry = fileEntries[index];
@@ -986,20 +988,26 @@ async function uploadEntries(fileEntries: LocalFileEntry[]) {
       uploadFileIndex.value = index + 1;
       uploadFileName.value = entry.relativePath;
       await nextTick();
-      await api.sftpUpload(
-        props.serverId,
-        entry.localPath,
-        remoteFile,
-        activeTransferId,
-        index + 1,
-        fileEntries.length
-      );
-      uploadCurrentFilePercent.value = 100;
+      try {
+        await api.sftpUpload(
+          props.serverId,
+          entry.localPath,
+          remoteFile,
+          activeTransferId,
+          index + 1,
+          fileEntries.length
+        );
+        successCount += 1;
+        uploadCurrentFilePercent.value = 100;
+      } catch {
+        failedNames.push(entry.relativePath);
+      }
     }
-    ElMessage.success(`已上传 ${fileEntries.length} 个文件`);
+    if (failedNames.length && successCount)
+      ElMessage.warning(`已上传 ${successCount} 个文件，跳过 ${failedNames.length} 个系统或占用中的文件`);
+    else if (failedNames.length) ElMessage.error(`上传失败：${failedNames[0]}`);
+    else ElMessage.success(`已上传 ${successCount} 个文件`);
     await loadRemoteDir(remotePath.value);
-  } catch (error) {
-    ElMessage.error(String(error));
   } finally {
     busy.value = false;
     uploadVisible.value = false;

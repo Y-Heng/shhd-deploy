@@ -112,10 +112,51 @@ fn emit_progress(
     );
 }
 
+/// Windows 注册表事务/页面文件等无法可靠拷贝，上传时直接跳过
+fn should_skip_upload_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".regtrans-ms") || lower.ends_with(".blf") { return true; }
+    if lower.starts_with("ntuser.dat") || lower.starts_with("usrclass.dat") { return true; }
+    matches!(
+        lower.as_str(),
+        "pagefile.sys"
+            | "hiberfil.sys"
+            | "swapfile.sys"
+            | "dumpstack.log.tmp"
+            | "thumbs.db"
+            | "desktop.ini"
+            | "$recycle.bin"
+            | "system volume information"
+    )
+}
+
+/// 隐藏+系统属性的文件通常被系统占用，SFTP 创建会返回 Failure
+fn should_skip_upload_path(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
+    if should_skip_upload_name(name) { return true; }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+        const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
+        if let Ok(metadata) = path.metadata() {
+            let attributes = metadata.file_attributes();
+            if attributes & FILE_ATTRIBUTE_HIDDEN != 0 && attributes & FILE_ATTRIBUTE_SYSTEM != 0 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// 收集待上传文件：传入文件则返回单条，传入目录则递归保留相对路径
 pub fn collect_local_files(root: &str) -> Result<Vec<LocalFileEntry>> {
     let root_path = Path::new(root);
     if root_path.is_file() {
+        if should_skip_upload_path(root_path) { return Ok(vec![]); }
         let file_name = root_path
             .file_name()
             .and_then(|name| name.to_str())
@@ -136,18 +177,21 @@ pub fn collect_local_files(root: &str) -> Result<Vec<LocalFileEntry>> {
         .filter(|name| !name.is_empty())
         .map(|name| name.to_string());
     let mut files = Vec::new();
-    for entry in walkdir::WalkDir::new(root_path).into_iter().flatten() {
-        if !entry.file_type().is_file() {
-            continue;
-        }
+    let walker = walkdir::WalkDir::new(root_path).into_iter().filter_entry(|entry| {
+        let name = entry.file_name().to_string_lossy();
+        !should_skip_upload_name(&name)
+    });
+    for entry in walker.flatten() {
+        if !entry.file_type().is_file() { continue; }
         let absolute = entry.path();
+        if should_skip_upload_path(absolute) { continue; }
+        // 被占用的文件打开即失败，避免整批上传被 SFTP Failure 打断
+        if std::fs::File::open(absolute).is_err() { continue; }
         let relative = absolute
             .strip_prefix(root_path)
             .with_context(|| format!("计算相对路径失败: {}", absolute.display()))?;
         let stripped = relative.to_string_lossy().replace('\\', "/");
-        if stripped.is_empty() {
-            continue;
-        }
+        if stripped.is_empty() { continue; }
         let relative_path = match &folder_name {
             Some(name) => format!("{}/{}", name, stripped),
             None => stripped,

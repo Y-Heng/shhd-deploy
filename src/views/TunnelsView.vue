@@ -9,6 +9,7 @@ import {
   bindPointerDrag,
   dropPlaceByY,
   elementFromPointIgnoringDrag,
+  isDropPlaceholder,
   moveGroupedItem,
   reorderGroups,
 } from "../composables/groupedDragSort";
@@ -280,6 +281,7 @@ function onItemGripDown(itemId: string, event: PointerEvent) {
 
 function onListPointerMove(clientX: number, clientY: number) {
   const hit = elementFromPointIgnoringDrag(clientX, clientY);
+  if (isDropPlaceholder(hit)) return;
   if (draggingGroup.value) {
     const groupElement = hit instanceof Element ? hit.closest(".tunnel-group") : null;
     if (!(groupElement instanceof HTMLElement) || !groupElement.dataset.groupName) return;
@@ -355,15 +357,16 @@ function isDropHint(groupName: string, itemId: string | undefined, place: string
       <el-button type="primary" @click="openAddDialog">添加隧道</el-button>
     </div>
 
+    <template v-for="[groupName, tunnels] in groupedTunnels" :key="groupName">
     <div
-      v-for="[groupName, tunnels] in groupedTunnels"
-      :key="groupName"
+      v-if="isDropHint(groupName, undefined, 'before')"
+      class="drop-placeholder"
+    />
+    <div
       class="tunnel-group"
       :data-group-name="groupName"
       :class="{
         'is-dragging': draggingGroup === groupName,
-        'is-drop-before': isDropHint(groupName, undefined, 'before'),
-        'is-drop-after': isDropHint(groupName, undefined, 'after'),
         'is-drop-into': isDropHint(groupName, undefined, 'into'),
       }"
     >
@@ -400,19 +403,16 @@ function isDropHint(groupName: string, itemId: string | undefined, place: string
       </div>
 
       <div v-show="!isGroupCollapsed(groupName)" class="tunnel-list">
+        <template v-for="tunnel in tunnels" :key="tunnel.id">
         <div
-          v-for="tunnel in tunnels"
-          :key="tunnel.id"
+          v-if="isDropHint(groupName, tunnel.id, 'before')"
+          class="drop-placeholder"
+        />
+        <div
           class="tunnel-row"
           :data-group-name="groupName"
           :data-item-id="tunnel.id"
-          :class="{
-            'is-dragging': draggingItemId === tunnel.id,
-            'is-drop-before': isDropHint(groupName, tunnel.id, 'before'),
-            'is-drop-after': isDropHint(groupName, tunnel.id, 'after'),
-          }"
-          @mouseenter="hoveredTunnelId = tunnel.id"
-          @mouseleave="hoveredTunnelId = ''"
+          :class="{ 'is-dragging': draggingItemId === tunnel.id }"
         >
           <div class="tunnel-main">
             <span
@@ -443,10 +443,7 @@ function isDropHint(groupName: string, itemId: string | undefined, place: string
               </div>
             </div>
           </div>
-          <div
-            class="tunnel-actions"
-            :class="{ show: hoveredTunnelId === tunnel.id }"
-          >
+          <div class="tunnel-actions">
             <el-button
               size="small"
               :type="isRunning(tunnel.id) ? 'warning' : 'success'"
@@ -478,8 +475,22 @@ function isDropHint(groupName: string, itemId: string | undefined, place: string
             <GripDots />
           </span>
         </div>
+        <div
+          v-if="isDropHint(groupName, tunnel.id, 'after')"
+          class="drop-placeholder"
+        />
+        </template>
+        <div
+          v-if="isDropHint(groupName, undefined, 'into')"
+          class="drop-placeholder"
+        />
       </div>
     </div>
+    <div
+      v-if="isDropHint(groupName, undefined, 'after')"
+      class="drop-placeholder"
+    />
+    </template>
 
     <el-dialog
       v-model="dialogVisible"
@@ -570,16 +581,8 @@ function isDropHint(groupName: string, itemId: string | undefined, place: string
 .tunnel-row.is-dragging {
   opacity: 0.55;
 }
-.tunnel-group.is-drop-before,
-.tunnel-row.is-drop-before {
-  box-shadow: inset 0 2px 0 #3dd68c;
-}
-.tunnel-group.is-drop-after,
-.tunnel-row.is-drop-after {
-  box-shadow: inset 0 -2px 0 #3dd68c;
-}
 .tunnel-group.is-drop-into {
-  outline: 1px dashed #3dd68c;
+  outline: 1px dashed var(--app-accent, #3dd68c);
   outline-offset: -2px;
 }
 .group-header {
@@ -729,7 +732,7 @@ function isDropHint(groupName: string, itemId: string | undefined, place: string
   pointer-events: none;
   transition: opacity 0.12s;
 }
-.tunnel-actions.show {
+.tunnel-row:hover .tunnel-actions {
   opacity: 1;
   pointer-events: auto;
 }

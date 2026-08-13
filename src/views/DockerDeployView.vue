@@ -10,6 +10,7 @@ import {
   bindPointerDrag,
   dropPlaceByY,
   elementFromPointIgnoringDrag,
+  isDropPlaceholder,
   moveGroupedItem,
   reorderGroups,
 } from "../composables/groupedDragSort";
@@ -227,6 +228,7 @@ function onItemGripDown(itemId: string, event: PointerEvent) {
 
 function onListPointerMove(clientX: number, clientY: number) {
   const hit = elementFromPointIgnoringDrag(clientX, clientY);
+  if (isDropPlaceholder(hit)) return;
   if (draggingGroup.value) {
     const groupElement = hit instanceof Element ? hit.closest(".docker-group") : null;
     if (!(groupElement instanceof HTMLElement) || !groupElement.dataset.groupName) return;
@@ -302,15 +304,16 @@ function isDropHint(groupName: string, itemId: string | undefined, place: string
       <el-button type="primary" @click="openAddDialog">添加目标</el-button>
     </div>
 
+    <template v-for="[groupName, targets] in groupedTargets" :key="groupName">
     <div
-      v-for="[groupName, targets] in groupedTargets"
-      :key="groupName"
+      v-if="isDropHint(groupName, undefined, 'before')"
+      class="drop-placeholder"
+    />
+    <div
       class="docker-group"
       :data-group-name="groupName"
       :class="{
         'is-dragging': draggingGroup === groupName,
-        'is-drop-before': isDropHint(groupName, undefined, 'before'),
-        'is-drop-after': isDropHint(groupName, undefined, 'after'),
         'is-drop-into': isDropHint(groupName, undefined, 'into'),
       }"
     >
@@ -350,14 +353,14 @@ function isDropHint(groupName: string, itemId: string | undefined, place: string
         <el-row :gutter="16">
           <el-col v-for="target in targets" :key="target.id" :span="12">
             <div
+              v-if="isDropHint(groupName, target.id, 'before')"
+              class="drop-placeholder"
+            />
+            <div
               class="docker-card-wrap"
               :data-group-name="groupName"
               :data-item-id="target.id"
-              :class="{
-                'is-dragging': draggingItemId === target.id,
-                'is-drop-before': isDropHint(groupName, target.id, 'before'),
-                'is-drop-after': isDropHint(groupName, target.id, 'after'),
-              }"
+              :class="{ 'is-dragging': draggingItemId === target.id }"
             >
               <el-card shadow="hover" class="docker-card">
               <div class="docker-title">
@@ -398,10 +401,23 @@ function isDropHint(groupName: string, itemId: string | undefined, place: string
               </div>
             </el-card>
             </div>
+            <div
+              v-if="isDropHint(groupName, target.id, 'after')"
+              class="drop-placeholder"
+            />
           </el-col>
         </el-row>
+        <div
+          v-if="isDropHint(groupName, undefined, 'into')"
+          class="drop-placeholder"
+        />
       </div>
     </div>
+    <div
+      v-if="isDropHint(groupName, undefined, 'after')"
+      class="drop-placeholder"
+    />
+    </template>
 
     <TaskLogPanel
       :logs="task.logs.value"
@@ -494,16 +510,8 @@ function isDropHint(groupName: string, itemId: string | undefined, place: string
 .docker-card-wrap.is-dragging {
   opacity: 0.55;
 }
-.docker-group.is-drop-before,
-.docker-card-wrap.is-drop-before {
-  box-shadow: inset 0 2px 0 #3dd68c;
-}
-.docker-group.is-drop-after,
-.docker-card-wrap.is-drop-after {
-  box-shadow: inset 0 -2px 0 #3dd68c;
-}
 .docker-group.is-drop-into {
-  outline: 1px dashed #3dd68c;
+  outline: 1px dashed var(--app-accent, #3dd68c);
   outline-offset: -2px;
 }
 .docker-card-wrap {

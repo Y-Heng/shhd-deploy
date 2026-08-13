@@ -38,6 +38,11 @@ export function elementFromPointIgnoringDrag(clientX: number, clientY: number): 
   return null;
 }
 
+/** 指针在占位条上时保持当前落点，避免布局变化导致提示闪烁 */
+export function isDropPlaceholder(hit: Element | null) {
+  return Boolean(hit?.closest(".drop-placeholder"));
+}
+
 /** 手柄指针拖拽：避免 WebView 里 HTML5 DnD 不触发 */
 export function bindPointerDrag(
   event: PointerEvent,

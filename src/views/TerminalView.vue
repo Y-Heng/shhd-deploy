@@ -10,7 +10,7 @@ import { api } from '../api'
 import { bus, OPEN_SSH_EVENT, sshConnectingId } from '../bus'
 import SftpPanel from '../components/SftpPanel.vue'
 import GripDots from '../components/GripDots.vue'
-import { dropPlaceByX, elementFromPointIgnoringDrag } from '../composables/groupedDragSort'
+import { dropPlaceByX, elementFromPointIgnoringDrag, isDropPlaceholder } from '../composables/groupedDragSort'
 import type { AppConfig, QuickCommand, ServerConfig, TermClosedPayload, TermDataPayload } from '../types'
 
 interface TermSession {
@@ -349,6 +349,7 @@ function onTabGripPointerDown(sessionId: string, event: PointerEvent) {
 function onTabPointerMove(event: PointerEvent) {
   if (!draggingSessionId.value) return
   const hit = elementFromPointIgnoringDrag(event.clientX, event.clientY)
+  if (isDropPlaceholder(hit)) return
   const tab = hit instanceof Element ? hit.closest('.session-tab') : null
   if (!(tab instanceof HTMLElement) || !tab.dataset.sessionId) {
     const bar = document.querySelector('.session-tabs')
@@ -661,9 +662,12 @@ onUnmounted(() => {
     <!-- 顶栏：会话标签 + 新建 -->
     <div class="term-topbar">
       <div class="session-tabs">
+        <template v-for="session in sessions" :key="session.sessionId">
         <div
-          v-for="session in sessions"
-          :key="session.sessionId"
+          v-if="isTabDropHint(session.sessionId, 'before')"
+          class="drop-placeholder is-tab"
+        />
+        <div
           role="button"
           tabindex="0"
           class="session-tab"
@@ -671,9 +675,7 @@ onUnmounted(() => {
           :class="{
             active: session.sessionId === activeSessionId,
             closed: session.closed,
-            'is-dragging': draggingSessionId === session.sessionId,
-            'is-drop-before': isTabDropHint(session.sessionId, 'before'),
-            'is-drop-after': isTabDropHint(session.sessionId, 'after')
+            'is-dragging': draggingSessionId === session.sessionId
           }"
           @click="activateSession(session.sessionId)"
           @keydown.enter.prevent="activateSession(session.sessionId)"
@@ -687,6 +689,11 @@ onUnmounted(() => {
             <el-icon :size="12"><Close /></el-icon>
           </span>
         </div>
+        <div
+          v-if="isTabDropHint(session.sessionId, 'after')"
+          class="drop-placeholder is-tab"
+        />
+        </template>
 
         <el-popover v-model:visible="connectPopoverVisible" placement="bottom-start" :width="320" trigger="click" popper-class="connect-popover">
           <template #reference>
@@ -907,12 +914,6 @@ onUnmounted(() => {
 }
 .session-tab.is-dragging {
   opacity: 0.55;
-}
-.session-tab.is-drop-before {
-  box-shadow: inset 2px 0 0 #3dd68c;
-}
-.session-tab.is-drop-after {
-  box-shadow: inset -2px 0 0 #3dd68c;
 }
 
 .session-dot {
