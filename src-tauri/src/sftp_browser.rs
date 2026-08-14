@@ -316,10 +316,9 @@ pub async fn upload_file(
     for attempt in 0..2 {
         ensure_cached(config, server_id).await?;
         let sessions = cache().lock().await;
-        let sftp = &sessions
-            .get(server_id)
-            .context("SFTP 会话缓存异常")?
-            .sftp;
+        let cached = sessions.get(server_id).context("SFTP 会话缓存异常")?;
+        let chunk_size = ssh::sftp_write_chunk(cached.conn.server.os);
+        let sftp = &cached.sftp;
 
         let upload_result = async {
             if let Some(parent) = &parent_dir {
@@ -340,8 +339,7 @@ pub async fn upload_file(
                 return Ok(());
             }
 
-            const CHUNK_SIZE: usize = 128 * 1024;
-            let mut buffer = vec![0u8; CHUNK_SIZE];
+            let mut buffer = vec![0u8; chunk_size];
             let mut transferred = 0u64;
             loop {
                 let read_len = local_file.read(&mut buffer).await?;

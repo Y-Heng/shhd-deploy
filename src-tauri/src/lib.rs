@@ -6,6 +6,7 @@ mod events;
 mod local_fs;
 mod logger;
 mod mcp;
+mod service_scripts;
 mod sftp_browser;
 mod ssh;
 mod terminal;
@@ -13,6 +14,7 @@ mod tunnel;
 
 use config::AppConfig;
 use deploy_backend::{BackendDeployRequest, ReleaseRecord};
+use deploy_frontend::FrontendReleaseRecord;
 use events::{TaskLogger, TaskRegistry};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -269,6 +271,26 @@ pub(crate) async fn launch_rollback(app: &AppHandle, release_id: String) -> Stri
     task_id
 }
 
+/// 启动前端回滚任务（界面与 MCP 共用）
+pub(crate) async fn launch_frontend_rollback(app: &AppHandle, release_id: String) -> String {
+    let state: State<AppState> = app.state();
+    let (task_id, cancel) = register_task(&state).await;
+    let logger = TaskLogger::new(app.clone(), task_id.clone(), state.task_registry.clone());
+    let config = state.config.read().await.clone();
+    let tasks = state.tasks.clone();
+    tauri::async_runtime::spawn(async move {
+        let result = deploy_frontend::run_frontend_rollback(
+            config,
+            release_id,
+            logger.clone(),
+            cancel.clone(),
+        )
+        .await;
+        finish_task(tasks, logger, cancel, result).await;
+    });
+    task_id
+}
+
 /// 启动前端部署任务（界面与 MCP 共用）
 pub(crate) async fn launch_frontend_deploy(
     app: &AppHandle,
@@ -328,12 +350,22 @@ fn get_releases() -> Vec<ReleaseRecord> {
 }
 
 #[tauri::command]
+fn get_frontend_releases() -> Vec<FrontendReleaseRecord> {
+    deploy_frontend::load_frontend_releases()
+}
+
+#[tauri::command]
 async fn start_frontend_deploy(
     app: AppHandle,
     target_ids: Vec<String>,
     options: deploy_frontend::FrontendDeployOptions,
 ) -> Result<String, String> {
     Ok(launch_frontend_deploy(&app, target_ids, options).await)
+}
+
+#[tauri::command]
+async fn start_frontend_rollback(app: AppHandle, release_id: String) -> Result<String, String> {
+    Ok(launch_frontend_rollback(&app, release_id).await)
 }
 
 #[tauri::command]
@@ -699,7 +731,7 @@ async fn open_rdp(
             };
             state
                 .tunnels
-                .start_with_config(app, config.clone(), tunnel_config)
+                .start_with_config(app.clone(), config.clone(), tunnel_config)
                 .await
                 .map_err(|error| format!("{:#}", error))?;
             state
@@ -793,7 +825,9 @@ pub fn run() {
             start_backend_deploy,
             start_rollback,
             get_releases,
+            get_frontend_releases,
             start_frontend_deploy,
+            start_frontend_rollback,
             start_docker_deploy,
             cancel_task,
             terminal_open,

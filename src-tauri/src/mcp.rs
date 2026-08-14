@@ -169,7 +169,12 @@ fn tool_definitions(permission: McpPermission) -> Vec<Value> {
         }),
         json!({
             "name": "list_releases",
-            "description": "查看最近的后端发布历史，包含待替换(staged)、成功(success)、失败(failed)状态。",
+            "description": "查看最近的后端发布历史，包含待替换(staged)、成功(success)、已回滚(rolled_back)、回滚完成(rollback)、失败(failed)状态。",
+            "inputSchema": { "type": "object", "properties": {} }
+        }),
+        json!({
+            "name": "list_frontend_releases",
+            "description": "查看最近的前端发布历史。status 为 success 且带 backupSuffix 的记录可回滚。",
             "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({
@@ -214,13 +219,13 @@ fn tool_definitions(permission: McpPermission) -> Vec<Value> {
         }));
         tools.push(json!({
             "name": "frontend_deploy",
-            "description": format!("前端部署：把本地构建产物同步到 nginx 服务器。{}", mode_hint),
+            "description": format!("前端部署：把本地构建产物打包上传到 nginx 服务器后解压。{}", mode_hint),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "targetIds": { "type": "array", "items": { "type": "string" }, "description": "前端目标 id 列表（list_config 获取）" },
                     "mode": { "type": "string", "enum": ["full", "stage", "replace"], "default": "stage" },
-                    "backupSibling": { "type": "boolean", "default": true }
+                    "backupSibling": { "type": "boolean", "description": "替换前备份线上目录，供回滚", "default": true }
                 },
                 "required": ["targetIds"]
             }
@@ -230,7 +235,16 @@ fn tool_definitions(permission: McpPermission) -> Vec<Value> {
     if permission == McpPermission::Full {
         tools.push(json!({
             "name": "rollback",
-            "description": "回滚一次后端发布：恢复替换前备份的 bin 并做健康检查。releaseId 从 list_releases 获取（仅 success 状态可回滚）。",
+            "description": "回滚一次后端发布：停止 IIS 后恢复替换前备份的 bin 并做健康检查。releaseId 从 list_releases 获取（仅 success 状态可回滚）。",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "releaseId": { "type": "string" } },
+                "required": ["releaseId"]
+            }
+        }));
+        tools.push(json!({
+            "name": "frontend_rollback",
+            "description": "回滚一次前端发布：把线上静态目录恢复为该次发布前的快照。releaseId 从 list_frontend_releases 获取（仅 success 且带 backupSuffix 可回滚）。",
             "inputSchema": {
                 "type": "object",
                 "properties": { "releaseId": { "type": "string" } },
@@ -315,6 +329,27 @@ async fn call_tool(app: &AppHandle, tool_name: &str, arguments: Value) -> Result
                         "projectIds": record.project_ids,
                         "createdAt": record.created_at,
                         "status": record.status,
+                    })
+                })
+                .collect();
+            Ok(serde_json::to_string_pretty(&recent).unwrap_or_default())
+        }
+        "list_frontend_releases" => {
+            let releases = crate::deploy_frontend::load_frontend_releases();
+            let recent: Vec<Value> = releases
+                .iter()
+                .take(20)
+                .map(|record| {
+                    json!({
+                        "releaseId": record.id,
+                        "createdAt": record.created_at,
+                        "mode": record.mode,
+                        "groupName": record.group_name,
+                        "targetIds": record.target_ids,
+                        "targetNames": record.target_names,
+                        "status": record.status,
+                        "backupSuffix": record.backup_suffix,
+                        "message": record.message,
                     })
                 })
                 .collect();
@@ -477,6 +512,17 @@ async fn call_tool(app: &AppHandle, tool_name: &str, arguments: Value) -> Result
             let task_id = crate::launch_rollback(app, release_id).await;
             Ok(format!(
                 "回滚任务已启动，taskId: {}。请调用 get_task_status 轮询结果。",
+                task_id
+            ))
+        }
+        "frontend_rollback" => {
+            if permission != McpPermission::Full {
+                return Err("回滚需要 MCP「完全访问」权限".into());
+            }
+            let release_id = arg_str(&arguments, "releaseId").ok_or("缺少参数 releaseId")?;
+            let task_id = crate::launch_frontend_rollback(app, release_id).await;
+            Ok(format!(
+                "前端回滚任务已启动，taskId: {}。请调用 get_task_status 轮询结果。",
                 task_id
             ))
         }

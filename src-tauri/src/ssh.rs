@@ -381,13 +381,36 @@ pub async fn probe_os(conn: &SshConnection) -> Result<(Option<String>, String)> 
     Ok((detected, combined))
 }
 
+/// Windows OpenSSH 对接近 256KB 的 FXP_WRITE 和并发写入不稳定，用串行 32KB
+pub const SFTP_WRITE_CHUNK: usize = 32 * 1024;
+const SFTP_WRITE_CHUNK_LINUX: usize = 128 * 1024;
+
+/// 按目标系统选择 SFTP 写包大小
+pub fn sftp_write_chunk(os: OsType) -> usize {
+    match os {
+        OsType::Windows => SFTP_WRITE_CHUNK,
+        OsType::Linux => SFTP_WRITE_CHUNK_LINUX,
+    }
+}
+
 /// 打开 SFTP 会话
 pub async fn open_sftp(conn: &SshConnection) -> Result<russh_sftp::client::SftpSession> {
     let channel = conn.handle.channel_open_session().await?;
     channel.request_subsystem(true, "sftp").await?;
-    let sftp = russh_sftp::client::SftpSession::new(channel.into_stream())
+    let chunk = sftp_write_chunk(conn.server.os) as u32;
+    let concurrent_writes = match conn.server.os {
+        OsType::Windows => 1,
+        OsType::Linux => 4,
+    };
+    let sftp_config = russh_sftp::client::Config {
+        max_packet_len: chunk,
+        max_concurrent_writes: concurrent_writes,
+        request_timeout_secs: 120,
+    };
+    let sftp = russh_sftp::client::SftpSession::new_with_config(channel.into_stream(), sftp_config)
         .await
         .context("建立 SFTP 会话失败")?;
+    sftp.set_timeout(120);
     Ok(sftp)
 }
 

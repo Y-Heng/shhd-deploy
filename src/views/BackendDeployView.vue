@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api } from "../api";
@@ -13,6 +13,12 @@ import type {
   DeployMode,
   ReleaseRecord,
 } from "../types";
+import {
+  IIS_START_SCRIPT,
+  IIS_STOP_SCRIPT,
+  JAVA_START_SCRIPT,
+  JAVA_STOP_SCRIPT,
+} from "../serviceScriptPresets";
 
 const config = ref<AppConfig | null>(null);
 const releases = ref<ReleaseRecord[]>([]);
@@ -210,6 +216,21 @@ async function refreshReleases() {
   releases.value = await api.getReleases();
 }
 
+watch(
+  () => task.finalState.value,
+  (state) => {
+    if (state === "success") refreshReleases();
+  }
+);
+
+function releaseStatusMeta(status: string): { label: string; type: "success" | "warning" | "info" | "danger" } {
+  if (status === "success") return { label: "成功", type: "success" };
+  if (status === "staged") return { label: "待替换", type: "warning" };
+  if (status === "rolled_back") return { label: "已回滚", type: "info" };
+  if (status === "rollback") return { label: "回滚完成", type: "info" };
+  return { label: "失败", type: "danger" };
+}
+
 // ===== 配置管理 =====
 const projectDialogVisible = ref(false);
 const isNewProject = ref(false);
@@ -221,6 +242,9 @@ const projectForm = reactive<BackendProject>({
   healthCheckUrl: "",
   healthCheckRetries: 10,
   healthCheckDelaySecs: 3,
+  stopScript: IIS_STOP_SCRIPT,
+  startScript: IIS_START_SCRIPT,
+  stopIisBeforeReplace: false,
 });
 
 async function persistConfig() {
@@ -275,6 +299,9 @@ function openAddProject() {
     healthCheckUrl: "",
     healthCheckRetries: 10,
     healthCheckDelaySecs: 3,
+    stopScript: IIS_STOP_SCRIPT,
+    startScript: IIS_START_SCRIPT,
+    stopIisBeforeReplace: false,
   });
   projectDialogVisible.value = true;
 }
@@ -282,7 +309,42 @@ function openAddProject() {
 function openEditProject(project: BackendProject) {
   isNewProject.value = false;
   Object.assign(projectForm, JSON.parse(JSON.stringify(project)));
+  if (!projectForm.stopScript && !projectForm.startScript && projectForm.stopIisBeforeReplace !== false) {
+    projectForm.stopScript = IIS_STOP_SCRIPT;
+    projectForm.startScript = IIS_START_SCRIPT;
+  }
+  if (!projectForm.stopScript) projectForm.stopScript = "";
+  if (!projectForm.startScript) projectForm.startScript = "";
   projectDialogVisible.value = true;
+}
+
+async function applyServicePreset(kind: "iis" | "java") {
+  const stopScript = kind === "iis" ? IIS_STOP_SCRIPT : JAVA_STOP_SCRIPT;
+  const startScript = kind === "iis" ? IIS_START_SCRIPT : JAVA_START_SCRIPT;
+  const hasCustom =
+    (projectForm.stopScript || "") !== "" || (projectForm.startScript || "") !== "";
+  const sameAsTarget =
+    projectForm.stopScript === stopScript && projectForm.startScript === startScript;
+  if (hasCustom && !sameAsTarget) {
+    await ElMessageBox.confirm("将覆盖当前停止/启动脚本，确认填入？", "填入方案", {
+      type: "warning",
+      confirmButtonText: "覆盖",
+    });
+  }
+  projectForm.stopScript = stopScript;
+  projectForm.startScript = startScript;
+  projectForm.stopIisBeforeReplace = false;
+}
+
+async function clearServiceScripts() {
+  if (projectForm.stopScript || projectForm.startScript) {
+    await ElMessageBox.confirm("清空后替换时不会停止任何服务，确认？", "清空脚本", {
+      type: "warning",
+    });
+  }
+  projectForm.stopScript = "";
+  projectForm.startScript = "";
+  projectForm.stopIisBeforeReplace = false;
 }
 
 async function chooseLocalBinDir() {
@@ -298,6 +360,9 @@ async function saveProject() {
   }
   const clone: BackendProject = JSON.parse(JSON.stringify(projectForm));
   if (!clone.healthCheckUrl) clone.healthCheckUrl = null;
+  clone.stopScript = clone.stopScript || "";
+  clone.startScript = clone.startScript || "";
+  clone.stopIisBeforeReplace = false;
   const group = selectedGroup.value;
   if (isNewProject.value) {
     group.projects.push(clone);
@@ -468,24 +533,10 @@ async function removeProject(project: BackendProject) {
             <template #default="{ row }">{{ row.projectIds.join("、") }}</template>
           </el-table-column>
           <el-table-column prop="createdAt" label="时间" width="165" />
-          <el-table-column label="状态" width="110">
+          <el-table-column label="状态" width="120">
             <template #default="{ row }">
-              <el-tag
-                :type="
-                  row.status === 'success'
-                    ? 'success'
-                    : row.status === 'staged'
-                      ? 'warning'
-                      : 'danger'
-                "
-              >
-                {{
-                  row.status === "success"
-                    ? "成功"
-                    : row.status === "staged"
-                      ? "待替换"
-                      : "失败"
-                }}
+              <el-tag :type="releaseStatusMeta(row.status).type">
+                {{ releaseStatusMeta(row.status).label }}
               </el-tag>
             </template>
           </el-table-column>
@@ -629,7 +680,7 @@ async function removeProject(project: BackendProject) {
     <el-dialog
       v-model="projectDialogVisible"
       :title="isNewProject ? '添加项目' : '编辑项目'"
-      width="640px"
+      width="820px"
     >
       <el-form label-width="120px">
         <el-form-item label="项目名称">
@@ -670,6 +721,35 @@ async function removeProject(project: BackendProject) {
             :max="60"
           />
           <span style="margin-left: 8px">秒</span>
+        </el-form-item>
+        <el-form-item label="停止/启动脚本">
+          <div class="script-toolbar">
+            <el-button size="small" @click="applyServicePreset('iis')">填入 IIS 方案</el-button>
+            <el-button size="small" @click="applyServicePreset('java')">填入 Java 方案</el-button>
+            <el-button size="small" @click="clearServiceScripts">清空</el-button>
+          </div>
+          <div class="form-hint" style="margin: 0 0 8px">
+            只停本项目关联的站点/程序池或 Windows 服务，不会停整个 IIS。Java 方案请把脚本里的服务名改成实际名称。占位符
+            <code>{{ "{appDir}" }}</code>
+            <code>{{ "{appBin}" }}</code>
+            <code>{{ "{projectName}" }}</code>
+            部署时自动替换。不要写 exit，以免跳过启动脚本。
+          </div>
+          <el-input
+            v-model="projectForm.stopScript"
+            type="textarea"
+            :autosize="{ minRows: 8, maxRows: 16 }"
+            placeholder="替换前停止脚本（PowerShell）"
+            class="script-textarea"
+          />
+          <el-input
+            v-model="projectForm.startScript"
+            type="textarea"
+            :autosize="{ minRows: 6, maxRows: 12 }"
+            placeholder="替换后启动脚本（PowerShell）"
+            class="script-textarea"
+            style="margin-top: 8px"
+          />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -734,5 +814,15 @@ async function removeProject(project: BackendProject) {
 }
 .projects-header h3 {
   margin: 0;
+}
+.script-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.script-textarea :deep(textarea) {
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.45;
 }
 </style>

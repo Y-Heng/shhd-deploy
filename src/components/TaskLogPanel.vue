@@ -37,6 +37,7 @@ function levelColor(level: string): string {
     <div class="task-panel-header">
       <el-progress
         :percentage="percent"
+        :stroke-width="16"
         :status="
           finalState === 'failed'
             ? 'exception'
@@ -46,6 +47,7 @@ function levelColor(level: string): string {
         "
         style="flex: 1"
       />
+      <span class="task-percent">{{ percent }}%</span>
       <el-button
         v-if="running"
         size="small"
@@ -56,7 +58,7 @@ function levelColor(level: string): string {
         取消
       </el-button>
     </div>
-    <div v-if="step" class="task-step">当前步骤：{{ step }}</div>
+    <div v-if="step" class="task-step">{{ running ? '正在进行：' : '最近步骤：' }}{{ step }}</div>
     <div ref="logContainer" class="task-logs">
       <div v-for="(line, index) in logs" :key="index" class="log-line">
         <span class="log-ts">{{ line.ts }}</span>
@@ -82,10 +84,18 @@ function levelColor(level: string): string {
   align-items: center;
   gap: 12px;
 }
+.task-percent {
+  min-width: 48px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--app-text, #e8eaed);
+}
 .task-step {
-  margin-top: 6px;
-  font-size: 12px;
-  color: var(--app-muted, #8b95a8);
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--app-text, #e8eaed);
+  line-height: 1.5;
 }
 .task-logs {
   margin-top: 8px;

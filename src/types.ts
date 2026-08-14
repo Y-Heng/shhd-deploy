@@ -60,6 +60,12 @@ export interface BackendProject {
   healthCheckUrl?: string | null;
   healthCheckRetries: number;
   healthCheckDelaySecs: number;
+  /** 替换前停止脚本（PowerShell），空则按旧配置决定是否用 IIS 方案 */
+  stopScript?: string;
+  /** 替换后启动脚本 */
+  startScript?: string;
+  /** 兼容旧配置：未写脚本时是否套用 IIS 默认方案 */
+  stopIisBeforeReplace?: boolean;
 }
 
 export type CopyMode = "smb" | "upload";
@@ -90,6 +96,8 @@ export interface FrontendTarget {
   /** 自定义中转目录，留空默认 <remoteDir>-staging */
   stagingDir?: string | null;
   deleteExtraneous: boolean;
+  /** 环境分组，如 开发环境 / 正式环境 */
+  group?: string | null;
 }
 
 export interface DockerTarget {
@@ -196,6 +204,21 @@ export interface ReleaseRecord {
   serverIds: string[];
   createdAt: string;
   status: string;
+}
+
+export interface FrontendReleaseRecord {
+  id: string;
+  createdAt: string;
+  mode: string;
+  groupName: string;
+  targetIds: string[];
+  targetNames: string[];
+  serverNames: string[];
+  serverIds?: string[];
+  /** 有值表示这次发布做了线上快照，可回滚 */
+  backupSuffix?: string | null;
+  status: string;
+  message: string;
 }
 
 export interface TaskLogPayload {

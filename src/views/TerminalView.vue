@@ -20,6 +20,7 @@ interface TermSession {
   terminal: Terminal
   fitAddon: FitAddon
   closed: boolean
+  panelMode: MainPanelMode
 }
 
 type RightPanelMode = 'snippets' | 'hidden'
@@ -52,8 +53,6 @@ const editCommand = ref<QuickCommand>(emptyQuickCommand())
 const snippetSearch = ref('')
 const expandedGroups = ref<Set<string>>(new Set())
 const rightPanelMode = ref<RightPanelMode>('snippets')
-const mainPanelMode = ref<MainPanelMode>('terminal')
-const sftpCurrentPath = ref('/')
 const sftpPanelMap = new Map<
   string,
   {
@@ -61,10 +60,12 @@ const sftpPanelMap = new Map<
     openPath?: (path: string) => void
   }
 >()
+const terminalObservers = new Map<string, ResizeObserver>()
 
 const unlisteners: UnlistenFn[] = []
 
 const snippetSidebarVisible = computed(() => rightPanelMode.value === 'snippets')
+const activePanelMode = computed(() => getActiveSession()?.panelMode ?? 'terminal')
 
 const quickCommands = computed(() => config.value?.quickCommands ?? [])
 
@@ -130,19 +131,24 @@ function syncActiveSshServers() {
 }
 
 async function copySelection() {
-  const session = getActiveSession()
-  if (!session) return
-  const text = session.terminal.getSelection()
+  const text = selectedTerminalText()
   if (!text) {
-    ElMessage.info('没有选中文本')
+    ElMessage.warning('没有选中文本，未复制')
     return
   }
   try {
     await navigator.clipboard.writeText(text)
-    ElMessage.success('已复制')
+    const preview = text.length > 48 ? `${text.slice(0, 48)}…` : text
+    ElMessage.success(`已复制：${preview}`)
   } catch {
     ElMessage.error('复制失败，请检查剪贴板权限')
   }
+}
+
+function selectedTerminalText(): string {
+  const session = getActiveSession()
+  if (!session) return ''
+  return (session.terminal.getSelection() || '').replace(/\u00a0/g, ' ').trim()
 }
 
 async function pasteFromClipboard() {
@@ -175,8 +181,7 @@ function bindTerminalClipboard(terminal: Terminal) {
       return false
     }
     if (withCtrl && !event.shiftKey && key === 'c') {
-      const selection = terminal.getSelection()
-      if (selection) {
+      if (selectedTerminalText()) {
         event.preventDefault()
         copySelection()
         return false
@@ -214,17 +219,30 @@ function onContextPaste() {
 
 function fitActiveTerminal() {
   const session = getActiveSession()
-  if (session) session.fitAddon.fit()
+  if (!session || session.panelMode !== 'terminal') return
+  const container = document.getElementById(`term-${session.sessionId}`)
+  if (!container || container.clientWidth < 40 || container.clientHeight < 40) return
+  try {
+    session.fitAddon.fit()
+  } catch {
+    // 容器可能暂时不可见
+  }
 }
 
-function fitAllTerminals() {
-  for (const session of sessions.value) {
+function observeTerminalSize(session: TermSession, container: HTMLElement) {
+  terminalObservers.get(session.sessionId)?.disconnect()
+  const observer = new ResizeObserver(() => {
+    if (session.sessionId !== activeSessionId.value) return
+    if (session.panelMode !== 'terminal') return
+    if (container.clientWidth < 40 || container.clientHeight < 40) return
     try {
       session.fitAddon.fit()
     } catch {
       // 容器可能暂时不可见
     }
-  }
+  })
+  observer.observe(container)
+  terminalObservers.set(session.sessionId, observer)
 }
 
 async function openSessionForServer(serverId: string) {
@@ -253,15 +271,18 @@ async function openSessionForServer(serverId: string) {
         foreground: '#3dd68c',
         cursor: '#3dd68c',
         cursorAccent: '#1e1e2e',
-        selectionBackground: '#45475a',
-        black: '#45475a',
+        // 选中高亮不能和调色板 black 相同，否则 Windows cmd 整屏用黑色背景时看不见选区
+        selectionBackground: '#4a7ec8',
+        selectionInactiveBackground: '#355a8c',
+        selectionForeground: '#eef4ff',
+        black: '#1e1e2e',
         red: '#f38ba8',
         green: '#3dd68c',
         yellow: '#f9e2af',
         blue: '#89b4fa',
         magenta: '#e84e7f',
         cyan: '#89dceb',
-        white: '#d7dde8',
+        white: '#3dd68c',
         brightBlack: '#585b70',
         brightRed: '#f38ba8',
         brightGreen: '#3dd68c',
@@ -269,7 +290,7 @@ async function openSessionForServer(serverId: string) {
         brightBlue: '#89b4fa',
         brightMagenta: '#e84e7f',
         brightCyan: '#89dceb',
-        brightWhite: '#d7dde8'
+        brightWhite: '#3dd68c'
       }
     })
     const fitAddon = new FitAddon()
@@ -287,7 +308,8 @@ async function openSessionForServer(serverId: string) {
       title: server.name,
       terminal,
       fitAddon,
-      closed: false
+      closed: false,
+      panelMode: 'terminal'
     })
     syncActiveSshServers()
     activeSessionId.value = sessionId
@@ -296,6 +318,7 @@ async function openSessionForServer(serverId: string) {
     const container = document.getElementById(`term-${sessionId}`)
     if (container) {
       terminal.open(container)
+      observeTerminalSize(sessions.value[sessions.value.length - 1], container)
       fitAddon.fit()
       terminal.focus()
     }
@@ -323,10 +346,11 @@ async function closeSession(sessionId: string) {
   sessions.value.splice(index, 1)
   syncActiveSshServers()
   sftpPanelMap.delete(sessionId)
+  terminalObservers.get(sessionId)?.disconnect()
+  terminalObservers.delete(sessionId)
   const stillUsed = sessions.value.some(item => item.serverId === serverId)
   if (!stillUsed) await api.sftpDisconnect(serverId)
   if (activeSessionId.value === sessionId) activeSessionId.value = sessions.value[sessions.value.length - 1]?.sessionId ?? ''
-  if (!sessions.value.length) mainPanelMode.value = 'terminal'
   await nextTick()
   fitActiveTerminal()
 }
@@ -503,7 +527,7 @@ async function removeCommand(item: QuickCommand) {
 
 function toggleSnippetSidebar() {
   rightPanelMode.value = rightPanelMode.value === 'snippets' ? 'hidden' : 'snippets'
-  nextTick(() => fitAllTerminals())
+  nextTick(() => fitActiveTerminal())
 }
 
 function bindSftpPanel(sessionId: string, element: unknown) {
@@ -522,22 +546,27 @@ function openSftpPanel() {
     connectPopoverVisible.value = true
     return
   }
-  mainPanelMode.value = 'sftp'
-  rightPanelMode.value = 'hidden'
+  if (session.panelMode === 'sftp') return
+  session.panelMode = 'sftp'
   nextTick(() => {
-    fitAllTerminals()
     const cwd = inferSshCwd()
     if (cwd) activeSftpPanel()?.openPath?.(cwd)
   })
 }
 
 function openTerminalPanel() {
-  const path = activeSftpPanel()?.getCurrentPath?.() || sftpCurrentPath.value || '/'
-  mainPanelMode.value = 'terminal'
+  const session = getActiveSession()
+  if (!session) return
+  if (session.panelMode === 'terminal') {
+    session.terminal.focus()
+    return
+  }
+  const path = activeSftpPanel()?.getCurrentPath?.() || '/'
+  session.panelMode = 'terminal'
   nextTick(() => {
     fitActiveTerminal()
     syncTerminalToSftpPath(path)
-    getActiveSession()?.terminal.focus()
+    session.terminal.focus()
   })
 }
 
@@ -615,15 +644,7 @@ function syncTerminalToSftpPath(path: string) {
   session.terminal.paste(`cd '${escaped}'\n`)
 }
 
-function onSftpPathChange(path: string) {
-  sftpCurrentPath.value = path
-}
-
 watch(snippetSidebarVisible, () => {
-  nextTick(() => fitActiveTerminal())
-})
-
-watch(mainPanelMode, () => {
   nextTick(() => fitActiveTerminal())
 })
 
@@ -660,6 +681,8 @@ onUnmounted(() => {
   bus.off(OPEN_SSH_EVENT, onOpenSshRequest)
   window.removeEventListener('resize', fitActiveTerminal)
   window.removeEventListener('click', hideContextMenu)
+  for (const observer of terminalObservers.values()) observer.disconnect()
+  terminalObservers.clear()
   for (const session of sessions.value) {
     api.terminalClose(session.sessionId)
     session.terminal.dispose()
@@ -675,36 +698,30 @@ onUnmounted(() => {
     <div class="term-topbar">
       <div class="session-tabs">
         <template v-for="session in sessions" :key="session.sessionId">
-        <div
-          v-if="isTabDropHint(session.sessionId, 'before')"
-          class="drop-placeholder is-tab"
-        />
-        <div
-          role="button"
-          tabindex="0"
-          class="session-tab"
-          :data-session-id="session.sessionId"
-          :class="{
-            active: session.sessionId === activeSessionId,
-            closed: session.closed,
-            'is-dragging': draggingSessionId === session.sessionId
-          }"
-          @click="activateSession(session.sessionId)"
-          @keydown.enter.prevent="activateSession(session.sessionId)"
-        >
-          <span class="session-dot" />
-          <span class="session-title">{{ session.title }}</span>
-          <span class="drag-grip" title="拖动标签排序" @pointerdown.stop="onTabGripPointerDown(session.sessionId, $event)" @click.stop>
-            <GripDots />
-          </span>
-          <span class="session-close" title="关闭" @click.stop="closeSession(session.sessionId)">
-            <el-icon :size="12"><Close /></el-icon>
-          </span>
-        </div>
-        <div
-          v-if="isTabDropHint(session.sessionId, 'after')"
-          class="drop-placeholder is-tab"
-        />
+          <div v-if="isTabDropHint(session.sessionId, 'before')" class="drop-placeholder is-tab" />
+          <div
+            role="button"
+            tabindex="0"
+            class="session-tab"
+            :data-session-id="session.sessionId"
+            :class="{
+              active: session.sessionId === activeSessionId,
+              closed: session.closed,
+              'is-dragging': draggingSessionId === session.sessionId
+            }"
+            @click="activateSession(session.sessionId)"
+            @keydown.enter.prevent="activateSession(session.sessionId)"
+          >
+            <span class="session-dot" />
+            <span class="session-title">{{ session.title }}</span>
+            <span class="drag-grip" title="拖动标签排序" @pointerdown.stop="onTabGripPointerDown(session.sessionId, $event)" @click.stop>
+              <GripDots />
+            </span>
+            <span class="session-close" title="关闭" @click.stop="closeSession(session.sessionId)">
+              <el-icon :size="12"><Close /></el-icon>
+            </span>
+          </div>
+          <div v-if="isTabDropHint(session.sessionId, 'after')" class="drop-placeholder is-tab" />
         </template>
 
         <el-popover v-model:visible="connectPopoverVisible" placement="bottom-start" :width="320" trigger="click" popper-class="connect-popover">
@@ -728,8 +745,8 @@ onUnmounted(() => {
       </div>
 
       <div class="topbar-actions">
-        <button type="button" class="mode-btn" :class="{ active: mainPanelMode === 'terminal' }" title="终端" @click="openTerminalPanel">SSH</button>
-        <button type="button" class="mode-btn" :class="{ active: mainPanelMode === 'sftp' }" title="SFTP 文件管理" @click="openSftpPanel">SFTP</button>
+        <button type="button" class="mode-btn" :class="{ active: activePanelMode === 'terminal' }" title="终端" @click="openTerminalPanel">SSH</button>
+        <button type="button" class="mode-btn" :class="{ active: activePanelMode === 'sftp' }" title="SFTP 文件管理" @click="openSftpPanel">SFTP</button>
         <button type="button" class="ghost-btn braces-btn" :class="{ active: snippetSidebarVisible }" title="常用命令" @click="toggleSnippetSidebar">
           <span class="braces-icon" aria-hidden="true">{}</span>
         </button>
@@ -737,23 +754,22 @@ onUnmounted(() => {
     </div>
 
     <div class="term-body">
-      <!-- 终端主区 -->
-      <div v-show="mainPanelMode === 'terminal'" class="term-main">
+      <div class="term-workspace">
         <div v-if="sessions.length === 0" class="term-empty">
           <div class="term-empty-title">SSH 终端</div>
           <div class="term-empty-desc">点击左上角 + 选择服务器，或在「服务器」页直接点击连接</div>
           <el-button type="primary" :loading="opening" @click="connectPopoverVisible = true"> 新建会话 </el-button>
         </div>
 
-        <div v-for="session in sessions" v-show="session.sessionId === activeSessionId" :id="`term-${session.sessionId}`" :key="session.sessionId" class="terminal-container" @contextmenu="onTerminalContextMenu" />
-      </div>
-
-      <!-- SFTP 文件管理 -->
-      <div v-show="mainPanelMode === 'sftp'" class="sftp-main">
-        <SftpPanel v-for="session in sessions" v-show="session.sessionId === activeSessionId" :key="session.sessionId" :ref="element => bindSftpPanel(session.sessionId, element)" :server-id="session.serverId" :server-name="session.title" :active="mainPanelMode === 'sftp' && session.sessionId === activeSessionId" @path-change="onSftpPathChange" />
-        <div v-if="!sessions.length" class="term-empty">
-          <div class="term-empty-title">SFTP</div>
-          <div class="term-empty-desc">请先打开 SSH 会话，再使用文件管理</div>
+        <div v-for="session in sessions" v-show="session.sessionId === activeSessionId" :key="session.sessionId" class="session-workspace">
+          <div v-show="session.panelMode === 'terminal'" class="term-main">
+            <div class="terminal-frame">
+              <div :id="`term-${session.sessionId}`" class="terminal-container" @contextmenu="onTerminalContextMenu" />
+            </div>
+          </div>
+          <div v-show="session.panelMode === 'sftp'" class="sftp-main">
+            <SftpPanel :ref="element => bindSftpPanel(session.sessionId, element)" :server-id="session.serverId" :server-name="session.title" :active="session.panelMode === 'sftp' && session.sessionId === activeSessionId" />
+          </div>
         </div>
       </div>
 
@@ -964,8 +980,7 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   width: 42px;
-  border: none;
-  border-right: 1px solid var(--term-border);
+  border: 1px solid var(--term-border);
   background: transparent;
   color: var(--term-muted);
   cursor: pointer;
@@ -1041,18 +1056,61 @@ onUnmounted(() => {
   min-height: 0;
 }
 
+.term-workspace {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.session-workspace {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
 .term-main,
 .sftp-main {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   position: relative;
   background: var(--term-bg);
 }
 
+.sftp-main {
+  display: flex;
+  flex-direction: column;
+}
+
+.sftp-main :deep(.sftp-panel) {
+  flex: 1;
+  min-height: 0;
+}
+
 .term-main {
+  display: flex;
+  flex-direction: column;
   background: var(--term-bg);
-  border-left: 1px solid var(--term-border);
-  border-bottom: 1px solid var(--term-border);
+  box-sizing: border-box;
+}
+
+.terminal-frame {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  padding: 12px 14px;
+  border: 1px solid var(--term-border);
+  border-radius: 0px;
+  overflow: hidden;
+  background: #1e1e2e;
 }
 
 .term-empty {
@@ -1063,6 +1121,8 @@ onUnmounted(() => {
   justify-content: center;
   gap: 12px;
   color: var(--term-muted);
+  border-bottom: 1px solid var(--term-border);
+  border-left: 1px solid var(--term-border);
 }
 
 .term-empty-title {
@@ -1078,9 +1138,23 @@ onUnmounted(() => {
 }
 
 .terminal-container {
-  position: absolute;
-  inset: 0;
-  padding: 8px 10px;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+}
+
+.terminal-container :deep(.xterm) {
+  height: 100%;
+  padding: 0;
+}
+
+.terminal-container :deep(.xterm-viewport) {
+  background-color: #1e1e2e;
+}
+
+.terminal-container :deep(.xterm-selection div) {
+  background-color: rgba(74, 126, 200, 0.45) !important;
 }
 
 .snippet-sidebar {

@@ -7,7 +7,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
 /// 部署模式
@@ -103,6 +103,31 @@ fn mark_release_success(group_id: &str, release_name: &str) -> bool {
     found
 }
 
+/// 回滚成功后：原发布标为已回滚，并追加一条回滚记录
+fn record_rollback(source: &ReleaseRecord) {
+    let mut records = load_releases();
+    for record in records.iter_mut() {
+        if record.id == source.id && record.status == "success" {
+            record.status = "rolled_back".into();
+        }
+    }
+    records.insert(
+        0,
+        ReleaseRecord {
+            id: uuid::Uuid::new_v4().to_string(),
+            release_name: format!("回滚 {}", source.release_name),
+            group_id: source.group_id.clone(),
+            group_name: source.group_name.clone(),
+            project_ids: source.project_ids.clone(),
+            server_ids: source.server_ids.clone(),
+            created_at: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            status: "rollback".into(),
+        },
+    );
+    records.truncate(100);
+    persist_releases(&records);
+}
+
 /// 从远程应用目录推导相对站点路径：D:\code\sites\to\service\rest -> to\service\rest
 fn relative_site_path(remote_app_dir: &str, fallback_id: &str) -> String {
     let lower = remote_app_dir.to_lowercase();
@@ -118,10 +143,13 @@ fn win_join(base: &str, sub: &str) -> String {
     format!("{}\\{}", base.trim_end_matches('\\'), sub.trim_start_matches('\\'))
 }
 
+fn wrap_project_scripts(project: &BackendProject, inner_script: &str) -> String {
+    let (stop_script, start_script) = crate::service_scripts::resolve_scripts(project);
+    crate::service_scripts::wrap_with_service_scripts(&stop_script, &start_script, inner_script)
+}
+
 fn check_cancel(cancel: &CancellationToken) -> Result<()> {
-    if cancel.is_cancelled() {
-        bail!("任务已被取消");
-    }
+    if cancel.is_cancelled() { bail!("任务已被取消"); }
     Ok(())
 }
 
@@ -182,38 +210,101 @@ async fn upload_file(
     progress_span: f64,
     step_name: &str,
 ) -> Result<()> {
-    let sftp = ssh::open_sftp(conn).await?;
     let remote_sftp_path = ssh::to_sftp_path(remote_path);
-
-    // 确保远端父目录存在
-    if let Some(slash_pos) = remote_sftp_path.rfind('/') {
-        ssh::sftp_mkdir_all(&sftp, &remote_sftp_path[..slash_pos]).await?;
-    }
-
     let mut local_file = tokio::fs::File::open(local_path)
         .await
         .with_context(|| format!("打开本地文件失败: {}", local_path.display()))?;
-    let total_bytes = local_file.metadata().await?.len().max(1);
+    let total_bytes = local_file.metadata().await?.len();
+    let started = Instant::now();
+    let mut last_error = None;
 
+    for attempt in 0..2 {
+        if attempt > 0 {
+            logger.info(format!(
+                "上传中断，正在重试: {:#}",
+                last_error.as_ref().unwrap()
+            ));
+            local_file
+                .seek(std::io::SeekFrom::Start(0))
+                .await
+                .context("重试上传时重置本地文件指针失败")?;
+        }
+
+        let sftp = ssh::open_sftp(conn).await?;
+        if let Some(slash_pos) = remote_sftp_path.rfind('/') { ssh::sftp_mkdir_all(&sftp, &remote_sftp_path[..slash_pos]).await?; }
+
+        match upload_file_once(
+            &sftp,
+            &mut local_file,
+            &remote_sftp_path,
+            total_bytes,
+            logger,
+            progress_base,
+            progress_span,
+            step_name,
+            ssh::sftp_write_chunk(conn.server.os),
+        )
+        .await
+        {
+            Ok(()) => {
+                last_error = None;
+                break;
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    if let Some(error) = last_error { return Err(error); }
+
+    let elapsed = started.elapsed().as_secs_f64();
+    logger.info(format!(
+        "上传完成: {:.2} MB，耗时 {:.1} 秒（{:.2} MB/s）",
+        total_bytes as f64 / 1024.0 / 1024.0,
+        elapsed,
+        total_bytes as f64 / 1024.0 / 1024.0 / elapsed.max(0.001)
+    ));
+    Ok(())
+}
+
+/// 单次 SFTP 写入（失败时由上层重试）
+async fn upload_file_once(
+    sftp: &russh_sftp::client::SftpSession,
+    local_file: &mut tokio::fs::File,
+    remote_sftp_path: &str,
+    total_bytes: u64,
+    logger: &TaskLogger,
+    progress_base: f64,
+    progress_span: f64,
+    step_name: &str,
+    chunk_size: usize,
+) -> Result<()> {
     let mut remote_file = sftp
-        .create(remote_sftp_path.clone())
+        .create(remote_sftp_path.to_string())
         .await
         .with_context(|| format!("创建远端文件失败: {}", remote_sftp_path))?;
 
-    let mut buffer = vec![0u8; 256 * 1024];
+    let mut buffer = vec![0u8; chunk_size];
     let mut sent_bytes: u64 = 0;
     let started = Instant::now();
     let mut last_report = Instant::now();
+    let progress_total = total_bytes.max(1);
 
     loop {
         let read = local_file.read(&mut buffer).await?;
-        if read == 0 {
-            break;
-        }
-        remote_file.write_all(&buffer[..read]).await?;
+        if read == 0 { break; }
+        remote_file
+            .write_all(&buffer[..read])
+            .await
+            .with_context(|| {
+                format!(
+                    "写入远端失败（已上传 {:.2} MB / {:.2} MB）: {}",
+                    sent_bytes as f64 / 1024.0 / 1024.0,
+                    total_bytes as f64 / 1024.0 / 1024.0,
+                    remote_sftp_path
+                )
+            })?;
         sent_bytes += read as u64;
         if last_report.elapsed().as_millis() > 500 {
-            let fraction = sent_bytes as f64 / total_bytes as f64;
+            let fraction = sent_bytes as f64 / progress_total as f64;
             let speed_mbps =
                 sent_bytes as f64 / 1024.0 / 1024.0 / started.elapsed().as_secs_f64().max(0.001);
             logger.progress(
@@ -228,15 +319,17 @@ async fn upload_file(
             last_report = Instant::now();
         }
     }
-    remote_file.shutdown().await?;
-
-    let elapsed = started.elapsed().as_secs_f64();
-    logger.info(format!(
-        "上传完成: {:.2} MB，耗时 {:.1} 秒（{:.2} MB/s）",
-        total_bytes as f64 / 1024.0 / 1024.0,
-        elapsed,
-        total_bytes as f64 / 1024.0 / 1024.0 / elapsed.max(0.001)
-    ));
+    remote_file
+        .shutdown()
+        .await
+        .with_context(|| {
+            format!(
+                "关闭远端文件失败（已上传 {:.2} MB / {:.2} MB）: {}",
+                sent_bytes as f64 / 1024.0 / 1024.0,
+                total_bytes as f64 / 1024.0 / 1024.0,
+                remote_sftp_path
+            )
+        })?;
     Ok(())
 }
 
@@ -306,35 +399,14 @@ async fn health_check(
     );
 }
 
-/// 同目录日期备份：把应用目录复制为 <目录名>-yyyyMMdd（当天已存在则跳过）
-async fn sibling_backup(
-    conn: &SshConnection,
-    target_dir: &str,
-    date_suffix: &str,
-    logger: &TaskLogger,
-) -> Result<()> {
-    let backup_dir = format!("{}-{}", target_dir.trim_end_matches('\\'), date_suffix);
-    let script = format!(
-        r#"$ErrorActionPreference = 'Continue'
-if (-not (Test-Path '{target_dir}')) {{ Write-Output '目录不存在，跳过备份'; exit 0 }}
-if (Test-Path '{backup_dir}') {{ Write-Output '今日备份已存在({backup_dir})，跳过'; exit 0 }}
-robocopy '{target_dir}' '{backup_dir}' /E /R:2 /W:3 /NP /NFL /NDL | Out-Null
-if ($LASTEXITCODE -ge 8) {{ Write-Output '备份失败'; exit 2 }}
-Write-Output ('目录已备份 -> {backup_dir}')
-exit 0"#,
-        target_dir = target_dir,
-        backup_dir = backup_dir,
-    );
-    run_ps(conn, &script, logger).await?;
-    Ok(())
-}
-
-/// 在单台服务器上完成"备份 -> 替换 -> 健康检查"
+/// 在单台服务器上完成"停 IIS → 备份 → 替换 → 启动 IIS → 健康检查"
 async fn deploy_to_server(
     conn: &SshConnection,
     group: &BackendGroup,
     project: &BackendProject,
     release_name: &str,
+    backup_sibling: bool,
+    date_suffix: &str,
     logger: &TaskLogger,
 ) -> Result<()> {
     let rel_path = relative_site_path(&project.remote_app_dir, &project.id);
@@ -347,31 +419,72 @@ async fn deploy_to_server(
         &win_join(&win_join(&group.backup_dir, release_name), &rel_path),
         "bin",
     );
+    let sibling_dir = format!(
+        "{}-{}",
+        project.remote_app_dir.trim_end_matches('\\'),
+        date_suffix
+    );
 
     logger.info(format!(
         "[{}] 部署 {}: 备份并替换 bin",
         conn.server.name, project.name
     ));
 
-    let script = format!(
-        r#"$ErrorActionPreference = 'Continue'
-if (-not (Test-Path '{staging_bin}')) {{ Write-Output '暂存目录不存在'; exit 4 }}
-if (Test-Path '{app_bin}') {{
-  robocopy '{app_bin}' '{backup_bin}' /E /R:2 /W:3 /NP /NFL /NDL | Out-Null
-  if ($LASTEXITCODE -ge 8) {{ Write-Output '备份失败'; exit 2 }}
-  Write-Output ('备份完成 -> {backup_bin}')
-}} else {{
-  Write-Output '目标 bin 不存在，跳过备份（首次部署）'
+    let sibling_block = if backup_sibling {
+        format!(
+            r#"
+if ($actionExit -eq 0) {{
+  $targetDir = '{target_dir}'
+  $siblingDir = '{sibling_dir}'
+  if (-not (Test-Path -LiteralPath $targetDir)) {{ Write-Output '目录不存在，跳过日期备份' }}
+  elseif (Test-Path -LiteralPath $siblingDir) {{ Write-Output ('今日备份已存在(' + $siblingDir + ')，跳过') }}
+  else {{
+    robocopy $targetDir $siblingDir /E /R:2 /W:3 /NP /NFL /NDL | Out-Null
+    if ($LASTEXITCODE -ge 8) {{ Write-Output '日期备份失败'; $actionExit = 2 }}
+    else {{ Write-Output ('目录已备份 -> ' + $siblingDir) }}
+  }}
 }}
-robocopy '{staging_bin}' '{app_bin}' /MIR /R:5 /W:2 /NP /NFL /NDL | Out-Null
-if ($LASTEXITCODE -ge 8) {{ Write-Output '替换失败'; exit 3 }}
-Write-Output '替换完成'
-exit 0"#,
-        staging_bin = staging_bin,
-        app_bin = app_bin,
-        backup_bin = backup_bin,
-    );
+"#,
+            target_dir = project.remote_app_dir.replace('\'', "''"),
+            sibling_dir = sibling_dir.replace('\'', "''"),
+        )
+    } else {
+        String::new()
+    };
 
+    let inner = format!(
+        r#"{sibling_block}
+if ($actionExit -eq 0) {{
+  if (-not (Test-Path -LiteralPath '{staging_bin}')) {{ Write-Output '暂存目录不存在'; $actionExit = 4 }}
+  else {{
+    if (Test-Path -LiteralPath '{app_bin}') {{
+      robocopy '{app_bin}' '{backup_bin}' /E /R:2 /W:3 /NP /NFL /NDL | Out-Null
+      if ($LASTEXITCODE -ge 8) {{ Write-Output '备份失败'; $actionExit = 2 }}
+      else {{ Write-Output ('备份完成 -> {backup_bin}') }}
+    }} else {{
+      Write-Output '目标 bin 不存在，跳过备份（首次部署）'
+    }}
+    if ($actionExit -eq 0) {{
+      robocopy '{staging_bin}' '{app_bin}' /MIR /R:5 /W:2 /NP /NFL /NDL | Out-Null
+      if ($LASTEXITCODE -ge 8) {{ Write-Output '替换失败'; $actionExit = 3 }}
+      else {{ Write-Output '替换完成' }}
+    }}
+  }}
+}}
+"#,
+        sibling_block = sibling_block,
+        staging_bin = staging_bin.replace('\'', "''"),
+        app_bin = app_bin.replace('\'', "''"),
+        backup_bin = backup_bin.replace('\'', "''"),
+    );
+    let script = wrap_project_scripts(project, &inner);
+    let (stop_script, _) = crate::service_scripts::resolve_scripts(project);
+    if !stop_script.trim().is_empty() {
+        logger.info(format!(
+            "[{}] 替换前先停本项目关联服务，完成后再启动",
+            conn.server.name
+        ));
+    }
     run_ps(conn, &script, logger).await?;
     health_check(conn, project, logger).await?;
     Ok(())
@@ -753,15 +866,18 @@ async fn replace_phase(
             Some(existing) if index == 0 => existing,
             _ => ssh::connect(config, &server.id).await?,
         };
-        if backup_sibling {
-            for project in projects {
-                check_cancel(cancel)?;
-                sibling_backup(&conn, &project.remote_app_dir, &date_suffix, logger).await?;
-            }
-        }
         for project in projects {
             check_cancel(cancel)?;
-            deploy_to_server(&conn, group, project, release_name, logger).await?;
+            deploy_to_server(
+                &conn,
+                group,
+                project,
+                release_name,
+                backup_sibling,
+                &date_suffix,
+                logger,
+            )
+            .await?;
         }
         deployed_servers.push(server.id.clone());
         logger.success(format!("服务器 {} 全部项目部署完成", server.name));
@@ -835,15 +951,19 @@ pub async fn run_rollback(
                 &win_join(&win_join(&group.backup_dir, &record.release_name), &rel_path),
                 "bin",
             );
-            let script = format!(
-                r#"$ErrorActionPreference = 'Continue'
-if (-not (Test-Path '{backup_bin}')) {{ Write-Output '备份目录不存在: {backup_bin}'; exit 4 }}
-robocopy '{backup_bin}' '{app_bin}' /MIR /R:5 /W:2 /NP /NFL /NDL | Out-Null
-if ($LASTEXITCODE -ge 8) {{ Write-Output '恢复失败'; exit 3 }}
-Write-Output '已恢复备份'
-exit 0"#,
-                backup_bin = backup_bin,
-                app_bin = app_bin,
+            let script = wrap_project_scripts(
+                project,
+                &format!(
+                    r#"if (-not (Test-Path -LiteralPath '{backup_bin}')) {{ Write-Output '备份目录不存在: {backup_bin}'; $actionExit = 4 }}
+else {{
+  robocopy '{backup_bin}' '{app_bin}' /MIR /R:5 /W:2 /NP /NFL /NDL | Out-Null
+  if ($LASTEXITCODE -ge 8) {{ Write-Output '恢复失败'; $actionExit = 3 }}
+  else {{ Write-Output '已恢复备份' }}
+}}
+"#,
+                    backup_bin = backup_bin.replace('\'', "''"),
+                    app_bin = app_bin.replace('\'', "''"),
+                ),
             );
             logger.info(format!("[{}] 回滚 {}", server.name, project.name));
             run_ps(&conn, &script, &logger).await?;
@@ -853,6 +973,7 @@ exit 0"#,
     }
 
     logger.progress(100.0, "完成");
+    record_rollback(&record);
     logger.success(format!("回滚 {} 完成", record.release_name));
     Ok(())
 }

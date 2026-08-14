@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AppConfig,
   ReleaseRecord,
+  FrontendReleaseRecord,
   TunnelStatusInfo,
   CopyMode,
   DeployMode,
@@ -35,6 +36,10 @@ export const api = {
   startRollback: (releaseId: string) =>
     invoke<string>("start_rollback", { releaseId }),
   getReleases: () => invoke<ReleaseRecord[]>("get_releases"),
+  getFrontendReleases: () =>
+    invoke<FrontendReleaseRecord[]>("get_frontend_releases"),
+  startFrontendRollback: (releaseId: string) =>
+    invoke<string>("start_frontend_rollback", { releaseId }),
 
   startFrontendDeploy: (
     targetIds: string[],

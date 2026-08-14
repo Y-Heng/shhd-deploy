@@ -95,6 +95,15 @@ pub struct BackendProject {
     /// 每次重试间隔秒数
     #[serde(default = "default_health_delay")]
     pub health_check_delay_secs: u32,
+    /// 替换/回滚前执行的 PowerShell（空则看 stop_iis_before_replace）
+    #[serde(default)]
+    pub stop_script: String,
+    /// 替换/回滚后执行的 PowerShell
+    #[serde(default)]
+    pub start_script: String,
+    /// 兼容旧配置：未写脚本时是否套用 IIS 默认方案
+    #[serde(default = "default_true")]
+    pub stop_iis_before_replace: bool,
 }
 
 fn default_health_retries() -> u32 {
@@ -103,6 +112,10 @@ fn default_health_retries() -> u32 {
 
 fn default_health_delay() -> u32 {
     3
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// 主备文件复制方式
@@ -174,7 +187,7 @@ pub struct FrontendTarget {
     pub server_ids: Vec<String>,
     /// 本地构建产物目录
     pub local_dir: String,
-    /// 服务器上 nginx 目录（如 /usr/share/nginx/html/to/brand）
+    /// 服务器上的静态目录（Linux nginx 或 Windows IIS 目录）
     pub remote_dir: String,
     /// 自定义中转目录（留空时默认使用 <remote_dir>-staging）
     #[serde(default)]
@@ -182,6 +195,9 @@ pub struct FrontendTarget {
     /// 是否删除远端多余文件（本地没有的文件）
     #[serde(default)]
     pub delete_extraneous: bool,
+    /// 环境分组（如 开发环境 / 正式环境）
+    #[serde(default)]
+    pub group: Option<String>,
 }
 
 /// Docker 部署目标
@@ -395,6 +411,10 @@ pub fn releases_file_path() -> PathBuf {
     config_dir().join("releases.json")
 }
 
+pub fn frontend_releases_file_path() -> PathBuf {
+    config_dir().join("frontend_releases.json")
+}
+
 pub fn known_hosts_file_path() -> PathBuf {
     config_dir().join("known_hosts.json")
 }
@@ -581,6 +601,9 @@ fn default_template() -> AppConfig {
                     health_check_url: Some("http://localhost:8081/admin/swagger".into()),
                     health_check_retries: 10,
                     health_check_delay_secs: 3,
+                    stop_script: String::new(),
+                    start_script: String::new(),
+                    stop_iis_before_replace: true,
                 },
                 BackendProject {
                     id: "service-rest".into(),
@@ -590,6 +613,9 @@ fn default_template() -> AppConfig {
                     health_check_url: Some("http://localhost:8083/swagger".into()),
                     health_check_retries: 10,
                     health_check_delay_secs: 3,
+                    stop_script: String::new(),
+                    start_script: String::new(),
+                    stop_iis_before_replace: true,
                 },
             ],
         }],
@@ -601,6 +627,7 @@ fn default_template() -> AppConfig {
             remote_dir: "/usr/share/nginx/html/to/brand".into(),
             staging_dir: None,
             delete_extraneous: false,
+            group: Some("开发环境".into()),
         }],
         docker_targets: vec![DockerTarget {
             id: "zx-infra".into(),
