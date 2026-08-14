@@ -64,7 +64,9 @@ const terminalObservers = new Map<string, ResizeObserver>()
 
 const unlisteners: UnlistenFn[] = []
 
-const snippetSidebarVisible = computed(() => rightPanelMode.value === 'snippets')
+const snippetSidebarVisible = computed(
+  () => rightPanelMode.value === 'snippets' && activePanelMode.value === 'terminal'
+)
 const activePanelMode = computed(() => getActiveSession()?.panelMode ?? 'terminal')
 
 const quickCommands = computed(() => config.value?.quickCommands ?? [])
@@ -526,6 +528,7 @@ async function removeCommand(item: QuickCommand) {
 }
 
 function toggleSnippetSidebar() {
+  if (activePanelMode.value === 'sftp') return
   rightPanelMode.value = rightPanelMode.value === 'snippets' ? 'hidden' : 'snippets'
   nextTick(() => fitActiveTerminal())
 }
@@ -747,7 +750,7 @@ onUnmounted(() => {
       <div class="topbar-actions">
         <button type="button" class="mode-btn" :class="{ active: activePanelMode === 'terminal' }" title="终端" @click="openTerminalPanel">SSH</button>
         <button type="button" class="mode-btn" :class="{ active: activePanelMode === 'sftp' }" title="SFTP 文件管理" @click="openSftpPanel">SFTP</button>
-        <button type="button" class="ghost-btn braces-btn" :class="{ active: snippetSidebarVisible }" title="常用命令" @click="toggleSnippetSidebar">
+        <button v-if="activePanelMode !== 'sftp'" type="button" class="ghost-btn braces-btn" :class="{ active: snippetSidebarVisible }" title="常用命令" @click="toggleSnippetSidebar">
           <span class="braces-icon" aria-hidden="true">{}</span>
         </button>
       </div>
