@@ -6,6 +6,8 @@ mod events;
 mod local_fs;
 mod logger;
 mod mcp;
+#[cfg(target_os = "windows")]
+mod rdp_title;
 mod service_scripts;
 mod sftp_browser;
 mod ssh;
@@ -710,6 +712,7 @@ async fn open_rdp(
     let Some(_jump_id) = server.jump_server_id.clone() else {
         let address = format!("{}:3389", server.host);
         let child = launch_rdp_client(&address, width, height, fullscreen)?;
+        remember_rdp_window_title(&address, &server.name);
         watch_rdp_process(app.clone(), server_id.clone(), child);
         return Ok(address);
     };
@@ -745,8 +748,17 @@ async fn open_rdp(
 
     let address = format!("127.0.0.1:{}", local_port);
     let child = launch_rdp_client(&address, width, height, fullscreen)?;
+    remember_rdp_window_title(&address, &server.name);
     watch_rdp_process(app, server_id, child);
     Ok(address)
+}
+
+/// Windows 下把 mstsc 标题「远程桌面连接」换成 SSH 服务器名称
+fn remember_rdp_window_title(address: &str, server_name: &str) {
+    #[cfg(target_os = "windows")]
+    rdp_title::watch_and_set_title(address.to_string(), server_name.to_string());
+    #[cfg(not(target_os = "windows"))]
+    let _ = (address, server_name);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
