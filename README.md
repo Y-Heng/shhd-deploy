@@ -1,4 +1,4 @@
-# 部署工具（JyDeploy）
+# 部署工具（KurumiDeploy）
 
 一个基于 Tauri（Rust + Vue 3）的桌面运维工具，替代 Termius + WinSCP + mstsc 拖文件的日常操作：
 
@@ -69,7 +69,7 @@ rustup target add aarch64-apple-darwin x86_64-apple-darwin
 npm run tauri build -- --target universal-apple-darwin
 ```
 
-- 未做签名公证的包首次打开被 Gatekeeper 拦截时，执行 `xattr -cr /Applications/JyDeploy.app` 或右键 → 打开。
+- 未做签名公证的包首次打开被 Gatekeeper 拦截时，执行 `xattr -cr /Applications/KurumiDeploy.app` 或右键 → 打开。
 - 换机器迁移配置：旧机器「设置 → 导出配置」，新机器「导入配置」；注意配置里"本地目录"（发布产物、前端 dist）是每台机器自己的路径，跨系统需要改成对应路径。
 
 ## 服务器准备（一次性）

@@ -11,8 +11,8 @@ import { api } from '../api'
 import type { LocalDirEntry, LocalFileEntry, SftpEntry, SftpProgressPayload } from '../types'
 
 const LOCAL_DRIVES_PATH = '::drives'
-const LOCAL_DRAG_MIME = 'application/x-jy-local-paths'
-const REMOTE_DRAG_MIME = 'application/x-jy-remote-paths'
+const LOCAL_DRAG_MIME = 'application/x-kurumi-local-paths'
+const REMOTE_DRAG_MIME = 'application/x-kurumi-remote-paths'
 const RUBBER_THRESHOLD = 5
 
 function isDriveListPath(path: string) {

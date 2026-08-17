@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "build:installer": "tauri build"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",

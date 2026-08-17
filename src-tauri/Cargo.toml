@@ -1,11 +1,11 @@
 [package]
 name = "shhd-deploy"
 version = "0.1.0"
-description = "简悦部署运维工具：隧道 / 后端部署 / 前端部署 / Docker 部署"
+description = "胡桃部署运维工具：隧道 / 后端部署 / 前端部署 / Docker 部署"
 edition = "2021"
 
 [lib]
-name = "jy_deploy_lib"
+name = "kurumi_deploy_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

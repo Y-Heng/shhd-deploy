@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "JyDeploy",
+  "productName": "KurumiDeploy",
   "version": "0.1.0",
-  "identifier": "cn.jianyue.jydeploy",
+  "identifier": "cn.kurumi.deploy",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -26,12 +26,30 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "publisher": "胡桃",
+    "copyright": "Copyright © 胡桃",
+    "category": "DeveloperTool",
+    "shortDescription": "胡桃部署运维工具",
+    "longDescription": "SSH 隧道、后端/前端/Docker 部署、终端与 SFTP",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["SimpChinese"],
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico",
+        "startMenuFolder": "胡桃"
+      }
+    }
   }
 }
