@@ -13,6 +13,7 @@ import SftpPanel from '../components/SftpPanel.vue'
 import GripDots from '../components/GripDots.vue'
 import { dropPlaceByX, elementFromPointIgnoringDrag, isDropPlaceholder } from '../composables/groupedDragSort'
 import { createSshTerminal } from '../sshTerminal'
+import { sftpTransfer } from '../composables/useSftpTransfer'
 import type { AppConfig, QuickCommand, ServerConfig, TermClosedPayload, TermDataPayload } from '../types'
 
 interface TermSession {
@@ -829,6 +830,16 @@ onUnmounted(() => {
       </div>
     </div>
 
+    <div v-if="sftpTransfer.running.value && activePanelMode !== 'sftp'" class="sftp-transfer-bar">
+      <div class="sftp-transfer-text">
+        <strong>SFTP 上传</strong>
+        <span>{{ sftpTransfer.percent.value }}%</span>
+        <span class="sftp-transfer-route">{{ sftpTransfer.route.value }}</span>
+        <span v-if="sftpTransfer.detail?.value">{{ sftpTransfer.detail.value }}</span>
+      </div>
+      <el-button size="small" type="danger" @click="sftpTransfer.cancel()">终止</el-button>
+    </div>
+
     <div class="term-body">
       <div class="term-workspace">
         <div v-if="visibleSessions.length === 0" class="term-empty">
@@ -1142,6 +1153,43 @@ onUnmounted(() => {
   display: flex;
   flex: 1;
   min-height: 0;
+}
+
+.sftp-transfer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--app-border, #2a3344);
+  background: var(--app-panel, #151a22);
+}
+
+.sftp-transfer-text {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--app-muted);
+}
+
+.sftp-transfer-text strong {
+  color: var(--app-text);
+  font-weight: 600;
+}
+
+.sftp-transfer-text span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sftp-transfer-text .sftp-transfer-route {
+  flex: 1;
+  white-space: pre-line;
+  line-height: 1.4;
+  color: var(--app-text);
 }
 
 .term-workspace {

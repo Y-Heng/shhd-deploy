@@ -24,6 +24,8 @@ export interface DeployTask {
   step: Ref<string>;
   finalState: Ref<TaskFinalState>;
   dismissed: Ref<boolean>;
+  detail?: Ref<string>;
+  route?: Ref<string>;
   attach: (taskId: string) => Promise<void>;
   cancel: () => Promise<void>;
 }

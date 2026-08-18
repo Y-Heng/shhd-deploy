@@ -255,15 +255,33 @@ impl ExecOutput {
         self.exit_code == 0
     }
     pub fn combined(&self) -> String {
-        let mut text = self.stdout.clone();
-        if !self.stderr.is_empty() {
+        let mut text = strip_clixml(&self.stdout);
+        let stderr = strip_clixml(&self.stderr);
+        if !stderr.is_empty() {
             if !text.is_empty() {
                 text.push('\n');
             }
-            text.push_str(&self.stderr);
+            text.push_str(&stderr);
         }
         text
     }
+}
+
+/// PowerShell 经 SSH 非交互执行时，会把进度记录打成 CLIXML，需从输出里去掉
+pub fn is_clixml_noise(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with("#< CLIXML")
+        || trimmed.contains("http://schemas.microsoft.com/powershell/2004")
+}
+
+/// 去掉 PowerShell CLIXML 进度噪声，保留真实错误文本
+pub fn strip_clixml(text: &str) -> String {
+    text.lines()
+        .filter(|line| !is_clixml_noise(line))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
 }
 
 /// 字节转字符串：优先 UTF-8，失败则按 GBK 解码（中文 Windows cmd 默认编码）
@@ -332,13 +350,15 @@ pub async fn exec(
 
 /// 将 PowerShell 脚本包装成 EncodedCommand 形式执行，彻底避免 cmd/PS 双层引号转义问题
 pub fn powershell_command(script: &str) -> String {
-    let utf16_bytes: Vec<u8> = script
+    // 关闭进度流，避免 SSH 捕获到 #< CLIXML 噪声
+    let wrapped = format!("$ProgressPreference = 'SilentlyContinue'\n{}", script);
+    let utf16_bytes: Vec<u8> = wrapped
         .encode_utf16()
         .flat_map(|unit| unit.to_le_bytes())
         .collect();
     let encoded = base64::engine::general_purpose::STANDARD.encode(utf16_bytes);
     format!(
-        "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {}",
+        "powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {}",
         encoded
     )
 }
@@ -367,13 +387,12 @@ pub fn parse_detected_os(output: &str) -> Option<String> {
 
 /// 连接成功后执行探测命令，返回 (解析出的系统类型, 原始输出)
 pub async fn probe_os(conn: &SshConnection) -> Result<(Option<String>, String)> {
+    // Windows 不用 PowerShell/WMI：Get-CimInstance 首次加载模块经常要数秒
     let probe_command = match conn.server.os {
         OsType::Linux => shell_command(
             "uname -srm; [ -f /etc/os-release ] && grep -iE '^(ID|ID_LIKE|NAME)=' /etc/os-release",
         ),
-        OsType::Windows => powershell_command(
-            "Write-Output ($env:COMPUTERNAME + ' | ' + (Get-CimInstance Win32_OperatingSystem).Caption)",
-        ),
+        OsType::Windows => "cmd /c ver".to_string(),
     };
     let output = exec(conn, &probe_command, None).await?;
     let combined = output.combined().trim().to_string();

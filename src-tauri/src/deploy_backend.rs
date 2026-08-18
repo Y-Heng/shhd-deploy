@@ -138,9 +138,15 @@ fn relative_site_path(remote_app_dir: &str, fallback_id: &str) -> String {
     }
 }
 
-/// Windows 路径拼接
+/// Windows 路径拼接（统一成反斜杠，避免 SMB 管理共享路径拼错）
 fn win_join(base: &str, sub: &str) -> String {
+    let base = base.replace('/', "\\");
+    let sub = sub.replace('/', "\\");
     format!("{}\\{}", base.trim_end_matches('\\'), sub.trim_start_matches('\\'))
+}
+
+fn ps_single_quote(value: &str) -> String {
+    value.replace('\'', "''")
 }
 
 fn wrap_project_scripts(project: &BackendProject, inner_script: &str) -> String {
@@ -337,9 +343,8 @@ async fn upload_file_once(
 async fn run_ps(conn: &SshConnection, script: &str, logger: &TaskLogger) -> Result<String> {
     let command = ssh::powershell_command(script);
     let mut line_callback = |line: &str| {
-        if !line.trim().is_empty() {
-            logger.info(format!("  [{}] {}", conn.server.name, line));
-        }
+        if line.trim().is_empty() || ssh::is_clixml_noise(line) { return; }
+        logger.info(format!("  [{}] {}", conn.server.name, line));
     };
     let output = ssh::exec(conn, &command, Some(&mut line_callback)).await?;
     if !output.success() {
@@ -505,37 +510,78 @@ async fn smb_copy_to_target(
     let staging_release = win_join(&group.staging_dir, release_name);
     let drive_letter = group
         .staging_dir
+        .replace('/', "\\")
         .chars()
         .next()
         .ok_or_else(|| anyhow!("暂存目录配置为空"))?;
+    if !drive_letter.is_ascii_alphabetic() { bail!("暂存目录必须是带盘符的 Windows 路径（如 D:\\code\\sites\\devlop），当前: {}", group.staging_dir); }
     let path_after_drive = staging_release
         .get(2..)
         .unwrap_or("")
         .trim_start_matches('\\');
+    if path_after_drive.is_empty() { bail!("暂存目录无效，无法拼出管理共享路径: {}", group.staging_dir); }
     let share_root = format!("\\\\{}\\{}$", secondary.host, drive_letter);
     let remote_share_path = format!("{}\\{}", share_root, path_after_drive);
-    let escaped_password = password.replace('\'', "''");
-    let escaped_user = secondary.username.replace('\'', "''");
+    let configured_user = ps_single_quote(&secondary.username);
+    let host_user = if secondary.username.contains('\\') {
+        configured_user.clone()
+    } else {
+        ps_single_quote(&format!("{}\\{}", secondary.host, secondary.username))
+    };
 
     logger.info(format!(
-        "[{}] 通过内网 SMB 复制发布目录到 {} ...",
-        source_conn.server.name, secondary.name
+        "[{}] 通过内网 SMB 复制发布目录到 {}（{} -> {}）...",
+        source_conn.server.name, secondary.name, staging_release, remote_share_path
     ));
 
     let script = format!(
         r#"$ErrorActionPreference = 'Continue'
-net use '{share_root}' '{password}' /user:'{user}' 2>&1 | Out-Null
-robocopy '{staging_release}' '{remote_share_path}' /E /R:2 /W:5 /NP /NFL /NDL | Out-Null
+$shareRoot = '{share_root}'
+$password = '{password}'
+$src = '{staging_release}'
+$dst = '{remote_share_path}'
+$users = @('{user}')
+if ('{host_user}' -ne '{user}') {{ $users += '{host_user}' }}
+
+net use $shareRoot /delete /y 2>$null | Out-Null
+$mapped = $false
+foreach ($userName in $users) {{
+  if ([string]::IsNullOrWhiteSpace($userName)) {{ continue }}
+  Write-Output ('尝试映射 ' + $shareRoot + ' ，用户 ' + $userName)
+  net use $shareRoot $password /user:$userName /persistent:no
+  if ($LASTEXITCODE -eq 0) {{ $mapped = $true; break }}
+  Write-Output ('net use 退出码 ' + $LASTEXITCODE)
+}}
+if (-not $mapped) {{
+  Write-Output ('SMB 映射失败，无法访问 ' + $shareRoot)
+  Write-Output '请检查：1) 主服务器能否访问备机管理共享 2) 账号密码是否正确 3) 备机已开启文件共享且 D$ 等管理共享可用 4) 本机账号访问管理共享需在备机设置 LocalAccountTokenFilterPolicy=1'
+  exit 1
+}}
+if (-not (Test-Path -LiteralPath $src)) {{
+  Write-Output ('源目录不存在: ' + $src)
+  net use $shareRoot /delete /y 2>$null | Out-Null
+  exit 1
+}}
+$dstParent = Split-Path -Parent $dst
+if (-not (Test-Path -LiteralPath $dstParent)) {{
+  New-Item -ItemType Directory -Path $dstParent -Force | Out-Null
+}}
+robocopy $src $dst /E /R:2 /W:5 /NP /NFL /NDL
 $copyResult = $LASTEXITCODE
-net use '{share_root}' /delete /y 2>&1 | Out-Null
-if ($copyResult -ge 8) {{ Write-Output ('SMB 复制失败，robocopy 退出码 ' + $copyResult); exit 1 }}
+net use $shareRoot /delete /y 2>$null | Out-Null
+if ($copyResult -ge 8) {{
+  Write-Output ('SMB 复制失败，robocopy 退出码 ' + $copyResult + '（源: ' + $src + ' -> 目标: ' + $dst + '）')
+  if ($copyResult -eq 16) {{ Write-Output '退出码 16 表示严重错误：路径无效、无权限或共享不可用' }}
+  exit 1
+}}
 Write-Output '内网复制完成'
 exit 0"#,
-        share_root = share_root,
-        password = escaped_password,
-        user = escaped_user,
-        staging_release = staging_release,
-        remote_share_path = remote_share_path,
+        share_root = ps_single_quote(&share_root),
+        password = ps_single_quote(password),
+        user = configured_user,
+        host_user = host_user,
+        staging_release = ps_single_quote(&staging_release),
+        remote_share_path = ps_single_quote(&remote_share_path),
     );
 
     run_ps(source_conn, &script, logger).await?;

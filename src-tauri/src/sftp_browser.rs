@@ -2,9 +2,9 @@ use crate::config::AppConfig;
 use crate::ssh;
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex as StdMutex, OnceLock};
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::Mutex;
@@ -52,9 +52,33 @@ struct CachedSftp {
 }
 
 static SFTP_CACHE: OnceLock<Mutex<HashMap<String, CachedSftp>>> = OnceLock::new();
+static CANCELLED_TRANSFERS: OnceLock<StdMutex<HashSet<String>>> = OnceLock::new();
 
 fn cache() -> &'static Mutex<HashMap<String, CachedSftp>> {
     SFTP_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cancelled_transfers() -> &'static StdMutex<HashSet<String>> {
+    CANCELLED_TRANSFERS.get_or_init(|| StdMutex::new(HashSet::new()))
+}
+
+fn lock_cancelled() -> std::sync::MutexGuard<'static, HashSet<String>> {
+    cancelled_transfers()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// 标记该次上传为用户终止，正在写入的文件会在下一分块退出
+pub fn request_cancel(transfer_id: &str) {
+    lock_cancelled().insert(transfer_id.to_string());
+}
+
+fn is_cancelled(transfer_id: &str) -> bool {
+    lock_cancelled().contains(transfer_id)
+}
+
+fn clear_cancel(transfer_id: &str) {
+    lock_cancelled().remove(transfer_id);
 }
 
 async fn invalidate_cache(server_id: &str) {
@@ -301,6 +325,11 @@ pub async fn upload_file(
         .with_context(|| format!("读取本地文件大小失败: {}", local_path))?
         .len();
 
+    if is_cancelled(transfer_id) {
+        clear_cancel(transfer_id);
+        bail!("上传已取消");
+    }
+
     emit_progress(
         app,
         transfer_id,
@@ -342,6 +371,11 @@ pub async fn upload_file(
             let mut buffer = vec![0u8; chunk_size];
             let mut transferred = 0u64;
             loop {
+                if is_cancelled(transfer_id) {
+                    let _ = remote_handle.shutdown().await;
+                    let _ = sftp.remove_file(remote.clone()).await;
+                    bail!("上传已取消");
+                }
                 let read_len = local_file.read(&mut buffer).await?;
                 if read_len == 0 {
                     break;
@@ -390,8 +424,15 @@ pub async fn upload_file(
 
         drop(sessions);
         match upload_result {
-            Ok(()) => return Ok(()),
+            Ok(()) => {
+                clear_cancel(transfer_id);
+                return Ok(());
+            }
             Err(error) => {
+                if is_cancelled(transfer_id) {
+                    clear_cancel(transfer_id);
+                    return Err(error);
+                }
                 invalidate_cache(server_id).await;
                 if attempt == 0 {
                     local_file

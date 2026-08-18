@@ -133,10 +133,12 @@ onMounted(async () => {
         <div class="help-body">
           <ul>
             <li><b>连不上 Windows 服务器</b>：确认已开启 OpenSSH Server，且端口填的是 <b>22</b>（不是 RDP 的 3389）。管理员 PowerShell：<code>Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0</code> 后 <code>Start-Service sshd</code>。</li>
+            <li><b>Windows SSH 比 Linux 慢</b>：本工具已改为用 cmd 开终端、用 <code>ver</code> 探测系统，避免拉起 PowerShell/WMI。若握手本身仍要好几秒，多半是服务器 <code>sshd_config</code> 里 <code>UseDNS yes</code> 在做反向解析，改为 <code>UseDNS no</code> 后重启 sshd 即可。</li>
             <li><b>提示"主机密钥指纹变化"</b>：说明服务器重装过或存在风险。确认无误后删除配置目录下 known_hosts.json 中对应记录。</li>
             <li><b>隧道端口被占用</b>：换个本地端口，或找到占用进程关掉。</li>
             <li><b>替换提示文件被占用</b>：到「项目配置」填入 IIS 或 Java 停止/启动脚本。IIS 方案只停本项目站点/程序池；Java 方案请改成实际 Windows 服务名。SSH 账号需要有管理对应服务的权限。</li>
             <li><b>健康检查一直失败</b>：到「后端部署 → 项目配置」核对健康检查地址（必须是服务器本机可访问的 localhost 地址）。</li>
+            <li><b>SMB 复制失败 / robocopy 退出码 16</b>：这是主服务器通过管理共享（如 <code>\\备机\D$</code>）把中转目录拷到备机时失败。请确认：主备内网互通；备机已开启文件共享且管理共享可用；SSH 里填的 Windows 账号密码能访问该共享。若用的是本机账号（非域账号），备机通常还要把注册表 <code>LocalAccountTokenFilterPolicy</code> 设为 1，否则管理员账号也无法访问 <code>D$</code>。临时绕过可把组的「备机同步」改成「分别上传」。</li>
             <li><b>日期备份目录越积越多</b>：目前不自动清理，请定期手动删除服务器上的 <code>目录名-日期</code> 旧备份。</li>
             <li><b>换电脑</b>：旧电脑导出配置 → 新电脑导入，再把配置里的本地路径改成新电脑的路径。</li>
             <li><b>想改分组名</b>：在服务器 / 隧道 / Docker 部署页双击分组名称；「未分组」请通过编辑条目指定新分组。</li>

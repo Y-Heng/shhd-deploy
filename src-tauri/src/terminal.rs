@@ -5,6 +5,7 @@ use base64::Engine;
 use russh::ChannelMsg;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::{mpsc, Mutex};
 
@@ -49,18 +50,33 @@ impl TerminalManager {
         cols: u32,
         rows: u32,
     ) -> Result<String> {
+        let started = Instant::now();
         let conn = ssh::connect(&config, server_id).await?;
+        crate::logger::append_log(&format!(
+            "terminal 握手 [{}] {} ms",
+            server_id,
+            started.elapsed().as_millis()
+        ));
         let channel = conn.handle.channel_open_session().await?;
         channel
             .request_pty(true, "xterm-256color", cols.max(20), rows.max(5), 0, 0, &[])
             .await
             .context("申请 PTY 失败")?;
-        channel.request_shell(true).await.context("启动 shell 失败")?;
 
-        // Windows 服务器默认代码页是 GBK，切到 UTF-8 避免中文乱码
         if conn.server.os == OsType::Windows {
-            let _ = channel.data(&b"chcp 65001\r\n"[..]).await;
+            // 强制 cmd：跳过可能被设成 powershell 的 DefaultShell，/d 跳过 AutoRun
+            channel
+                .exec(true, "cmd.exe /d /q /k chcp 65001>nul")
+                .await
+                .context("启动 Windows cmd 失败")?;
+        } else {
+            channel.request_shell(true).await.context("启动 shell 失败")?;
         }
+        crate::logger::append_log(&format!(
+            "terminal 会话就绪 [{}] {} ms",
+            server_id,
+            started.elapsed().as_millis()
+        ));
 
         let session_id = uuid::Uuid::new_v4().to_string();
         let (command_tx, mut command_rx) = mpsc::channel::<TermCommand>(64);

@@ -10,6 +10,7 @@ import "@xterm/xterm/css/xterm.css";
 import { api } from "../api";
 import SftpPanel from "../components/SftpPanel.vue";
 import { createSshTerminal } from "../sshTerminal";
+import { sftpTransfer } from "../composables/useSftpTransfer";
 import type { TermClosedPayload, TermDataPayload } from "../types";
 
 const props = defineProps<{
@@ -99,6 +100,15 @@ onUnmounted(() => {
         </button>
       </div>
     </div>
+    <div v-if="sftpTransfer.running.value && panelMode !== 'sftp'" class="sftp-transfer-bar">
+      <div class="sftp-transfer-text">
+        <strong>SFTP 上传</strong>
+        <span>{{ sftpTransfer.percent.value }}%</span>
+        <span class="sftp-transfer-route">{{ sftpTransfer.route.value }}</span>
+        <span v-if="sftpTransfer.detail?.value">{{ sftpTransfer.detail.value }}</span>
+      </div>
+      <el-button size="small" type="danger" @click="sftpTransfer.cancel()">终止</el-button>
+    </div>
     <div class="popout-body">
       <div v-show="panelMode === 'terminal'" class="term-main">
         <div ref="termHost" class="terminal-container" />
@@ -167,6 +177,37 @@ onUnmounted(() => {
 .popout-body {
   flex: 1;
   min-height: 0;
+}
+.sftp-transfer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #2a3344;
+  background: #151a22;
+}
+.sftp-transfer-text {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  font-size: 12px;
+  color: #8b95a8;
+}
+.sftp-transfer-text strong {
+  color: #d7dde8;
+}
+.sftp-transfer-text span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sftp-transfer-text .sftp-transfer-route {
+  flex: 1;
+  white-space: pre-line;
+  line-height: 1.4;
+  color: #d7dde8;
 }
 .term-main,
 .sftp-main {

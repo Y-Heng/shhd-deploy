@@ -4,11 +4,12 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import type { TableInstance } from 'element-plus'
 import { ArrowUp, Document, Folder, Plus, Refresh } from '@element-plus/icons-vue'
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { api } from '../api'
-import type { LocalDirEntry, LocalFileEntry, SftpEntry, SftpProgressPayload } from '../types'
+import type { LocalDirEntry, LocalFileEntry, SftpEntry } from '../types'
+import { sftpTransfer } from '../composables/useSftpTransfer'
 
 const LOCAL_DRIVES_PATH = '::drives'
 const LOCAL_DRAG_MIME = 'application/x-kurumi-local-paths'
@@ -147,30 +148,7 @@ const contextMenu = ref<ContextMenuState>({
 })
 
 const uploadVisible = ref(false)
-const uploadFileName = ref('')
-const uploadTransferred = ref(0)
-const uploadTotal = ref(0)
-const uploadFileIndex = ref(0)
-const uploadFileCount = ref(0)
-const uploadCurrentFilePercent = ref(0)
-const uploadPercent = computed(() => {
-  if (!uploadFileCount.value) return 0
-  const fileWeight = 100 / uploadFileCount.value
-  const completed = Math.max(0, uploadFileIndex.value - 1) * fileWeight
-  const current = (uploadCurrentFilePercent.value / 100) * fileWeight
-  return Math.min(100, Math.round(completed + current))
-})
-const uploadSizeText = computed(() => {
-  const format = (size: number) => {
-    if (size < 1024) return `${size} B`
-    if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
-    return `${(size / 1024 / 1024).toFixed(2)} MB`
-  }
-  const filePart = uploadFileCount.value > 1 ? `文件 ${uploadFileIndex.value}/${uploadFileCount.value} · ` : ''
-  return `${filePart}${format(uploadTransferred.value)} / ${format(uploadTotal.value)}`
-})
 
-let progressUnlisten: UnlistenFn | null = null
 let dragDropUnlisten: UnlistenFn | null = null
 let activeTransferId = ''
 
@@ -898,17 +876,36 @@ function createTransferId() {
   return `up-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
 }
 
-async function beginUploadSession(fileCount: number) {
+function localParentDir(filePath: string) {
+  const normalized = filePath.replace(/\\/g, '/')
+  const slash = normalized.lastIndexOf('/')
+  if (slash <= 0) return filePath
+  return filePath.slice(0, filePath.length - (normalized.length - slash))
+}
+
+async function beginUploadSession(fileCount: number, fromRoot: string, toRoot: string) {
   activeTransferId = createTransferId()
-  uploadFileCount.value = fileCount
-  uploadFileIndex.value = 0
-  uploadCurrentFilePercent.value = 0
-  uploadTransferred.value = 0
-  uploadTotal.value = 0
-  uploadFileName.value = ''
   uploadVisible.value = true
   busy.value = true
+  await sftpTransfer.begin({
+    transferId: activeTransferId,
+    serverId: props.serverId,
+    serverName: props.serverName || props.serverId,
+    fileCount,
+    fromRoot,
+    toRoot
+  })
   await nextTick()
+}
+
+function isCancelError(error: unknown) {
+  if (sftpTransfer.cancelled.value) return true
+  const text = error instanceof Error ? error.message : String(error ?? '')
+  return text.includes('已取消')
+}
+
+async function cancelUpload() {
+  await sftpTransfer.cancel()
 }
 
 async function uploadEntries(fileEntries: LocalFileEntry[]) {
@@ -916,29 +913,47 @@ async function uploadEntries(fileEntries: LocalFileEntry[]) {
     ElMessage.warning('没有可上传的文件（已跳过系统或占用中的文件）')
     return
   }
-  await beginUploadSession(fileEntries.length)
+  await beginUploadSession(fileEntries.length, localParentDir(fileEntries[0].localPath), remotePath.value)
   let successCount = 0
   const failedNames: string[] = []
+  let endState: 'success' | 'failed' | 'cancelled' = 'success'
   try {
     for (let index = 0; index < fileEntries.length; index++) {
+      if (sftpTransfer.cancelled.value) {
+        endState = 'cancelled'
+        break
+      }
       const entry = fileEntries[index]
       const remoteFile = joinRemotePath(remotePath.value, entry.relativePath)
-      uploadFileIndex.value = index + 1
-      uploadFileName.value = entry.relativePath
-      await nextTick()
+      await sftpTransfer.setCurrentFile(entry.localPath, remoteFile)
       try {
         await api.sftpUpload(props.serverId, entry.localPath, remoteFile, activeTransferId, index + 1, fileEntries.length)
         successCount += 1
-        uploadCurrentFilePercent.value = 100
-      } catch {
+      } catch (error) {
+        if (isCancelError(error)) {
+          endState = 'cancelled'
+          break
+        }
         failedNames.push(entry.relativePath)
       }
     }
-    if (failedNames.length && successCount) ElMessage.warning(`已上传 ${successCount} 个文件，跳过 ${failedNames.length} 个系统或占用中的文件`)
-    else if (failedNames.length) ElMessage.error(`上传失败：${failedNames[0]}`)
-    else ElMessage.success(`已上传 ${successCount} 个文件`)
+    if (endState === 'cancelled') {
+      const donePart = successCount ? `（已完成 ${successCount} 个文件）` : ''
+      ElMessage.info(`已终止上传${donePart}`)
+    } else if (failedNames.length && successCount) ElMessage.warning(`已上传 ${successCount} 个文件，跳过 ${failedNames.length} 个系统或占用中的文件`)
+    else if (failedNames.length) {
+      endState = 'failed'
+      ElMessage.error(`上传失败：${failedNames[0]}`)
+    } else ElMessage.success(`已上传 ${successCount} 个文件`)
     await loadRemoteDir(remotePath.value)
   } finally {
+    if (sftpTransfer.cancelled.value) endState = 'cancelled'
+    await sftpTransfer.finish({
+      transferId: activeTransferId,
+      state: endState,
+      successCount,
+      failedCount: failedNames.length
+    })
     busy.value = false
     uploadVisible.value = false
     activeTransferId = ''
@@ -1488,17 +1503,6 @@ onMounted(async () => {
   await loadShortcuts()
   window.addEventListener('click', onGlobalClick)
 
-  progressUnlisten = await listen<SftpProgressPayload>('sftp-progress', event => {
-    if (activeTransferId && event.payload.transferId !== activeTransferId) return
-    uploadFileName.value = event.payload.fileName
-    uploadTransferred.value = event.payload.transferred
-    uploadTotal.value = event.payload.total
-    uploadFileIndex.value = event.payload.fileIndex
-    uploadFileCount.value = event.payload.fileCount
-    if (event.payload.total > 0) uploadCurrentFilePercent.value = Math.min(100, Math.round((event.payload.transferred / event.payload.total) * 100))
-    else if (event.payload.done) uploadCurrentFilePercent.value = 100
-  })
-
   try {
     dragDropUnlisten = await getCurrentWebview().onDragDropEvent(async event => {
       if (!props.active) {
@@ -1531,7 +1535,6 @@ onUnmounted(async () => {
   window.removeEventListener('click', onGlobalClick)
   window.removeEventListener('mousemove', onPointerMove)
   window.removeEventListener('mouseup', onPointerUp)
-  if (progressUnlisten) progressUnlisten()
   if (dragDropUnlisten) dragDropUnlisten()
 })
 </script>
@@ -1652,7 +1655,7 @@ onUnmounted(async () => {
           </form>
         </div>
         <div ref="remoteTableWrapRef" class="table-wrap" @mousedown="onTableWrapMouseDown('remote', $event)" @contextmenu.capture.prevent="onTableContextMenu('remote', $event)">
-          <el-table ref="remoteTableRef" v-loading="remoteLoading || busy" :data="sortedRemoteEntries" height="100%" class="sftp-table" row-key="path" :row-class-name="getRemoteRowClassName" @row-dblclick="onRemoteRowDblClick">
+          <el-table ref="remoteTableRef" v-loading="remoteLoading" :data="sortedRemoteEntries" height="100%" class="sftp-table" row-key="path" :row-class-name="getRemoteRowClassName" @row-dblclick="onRemoteRowDblClick">
             <el-table-column label="名称" min-width="180">
               <template #default="{ row }">
                 <div class="cell-drag" :data-path="row.path">
@@ -1725,14 +1728,24 @@ onUnmounted(async () => {
       </div>
     </Teleport>
 
-    <div v-if="uploadVisible" class="upload-progress">
-      <div class="upload-progress-head">
-        <span>上传中：{{ uploadFileName }}</span>
-        <span>{{ uploadPercent }}%</span>
+    <Teleport to="body">
+      <div v-if="uploadVisible && active" class="upload-progress">
+        <div class="upload-progress-head">
+          <span>SFTP 上传 {{ sftpTransfer.percent.value }}%</span>
+        </div>
+        <el-progress :percentage="sftpTransfer.percent.value" :stroke-width="10" />
+        <div class="upload-progress-route" :title="sftpTransfer.fromPath.value || sftpTransfer.fromRoot.value">
+          从 {{ sftpTransfer.fromPath.value || sftpTransfer.fromRoot.value || '本地' }}
+        </div>
+        <div class="upload-progress-route" :title="`${sftpTransfer.serverName.value} ${sftpTransfer.toPath.value || sftpTransfer.toRoot.value}`">
+          到 {{ sftpTransfer.serverName.value }} {{ sftpTransfer.toPath.value || sftpTransfer.toRoot.value || '远端' }}
+        </div>
+        <div class="upload-progress-size">{{ sftpTransfer.step.value }} · {{ sftpTransfer.detail.value }}</div>
+        <div class="upload-progress-actions">
+          <el-button size="small" type="danger" @click="cancelUpload">终止上传</el-button>
+        </div>
       </div>
-      <el-progress :percentage="uploadPercent" :stroke-width="10" />
-      <div class="upload-progress-size">{{ uploadSizeText }}</div>
-    </div>
+    </Teleport>
   </div>
 </template>
 
@@ -2170,16 +2183,18 @@ onUnmounted(async () => {
 }
 
 .upload-progress {
-  position: absolute;
-  left: 16px;
-  right: 16px;
-  bottom: 16px;
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  width: min(640px, calc(100vw - 48px));
   padding: 12px 14px;
   border-radius: var(--app-radius-lg, 10px);
   background: rgba(21, 26, 34, 0.96);
   border: 1px solid var(--app-border, #2a3344);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
-  z-index: 40;
+  z-index: 5000;
+  pointer-events: auto;
 }
 
 .upload-progress-head {
@@ -2188,6 +2203,17 @@ onUnmounted(async () => {
   gap: 12px;
   margin-bottom: 8px;
   font-size: 13px;
+  font-weight: 600;
+}
+
+.upload-progress-route {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--app-text, #d7dde8);
+  font-family: Consolas, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .upload-progress-size {
@@ -2195,5 +2221,11 @@ onUnmounted(async () => {
   font-size: 12px;
   color: var(--app-muted, #8b95a8);
   font-family: Consolas, monospace;
+}
+
+.upload-progress-actions {
+  margin-top: 10px;
+  display: flex;
+  justify-content: flex-end;
 }
 </style>

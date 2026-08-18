@@ -647,6 +647,7 @@ async function removeProject(project: BackendProject) {
                 <el-radio value="smb">内网 SMB 复制</el-radio>
                 <el-radio value="upload">分别上传</el-radio>
               </el-radio-group>
+              <span class="form-hint">SMB 要求主服务器能访问备机管理共享（如 D$），且账号密码与服务器配置一致</span>
             </el-form-item>
             <el-form-item>
               <el-button type="primary" @click="persistConfig">保存组配置</el-button>

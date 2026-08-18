@@ -29,10 +29,12 @@ use tunnel::{TunnelManager, TunnelStatusInfo};
 /// SFTP 错误统一记录诊断日志
 fn map_sftp_error(operation: &str, server_id: &str, path: &str, error: impl std::fmt::Display) -> String {
     let message = format!("{:#}", error);
-    logger::append_log(&format!(
-        "sftp {} 错误 [{}:{}]: {}",
-        operation, server_id, path, message
-    ));
+    if !message.contains("已取消") {
+        logger::append_log(&format!(
+            "sftp {} 错误 [{}:{}]: {}",
+            operation, server_id, path, message
+        ));
+    }
     message
 }
 
@@ -162,9 +164,11 @@ async fn probe_server(
         })?;
     let connect_millis = started.elapsed().as_millis();
 
+    let probe_started = std::time::Instant::now();
     let (detected, raw_output) = ssh::probe_os(&conn)
         .await
         .map_err(|error| format!("{:#}", error))?;
+    let probe_millis = probe_started.elapsed().as_millis();
 
     if persist {
         if let Some(os) = &detected {
@@ -174,8 +178,9 @@ async fn probe_server(
 
     let os_label = detected.as_deref().unwrap_or("未知");
     Ok(format!(
-        "连接成功，耗时 {} ms\n探测系统: {}\n{}",
+        "连接成功，握手 {} ms，探测 {} ms\n探测系统: {}\n{}",
         connect_millis,
+        probe_millis,
         os_label,
         raw_output
     ))
@@ -393,6 +398,11 @@ async fn terminal_open(
     rows: u32,
 ) -> Result<String, String> {
     let config = state.config.read().await.clone();
+    let already_detected = config
+        .find_server(&server_id)
+        .ok()
+        .and_then(|server| server.detected_os.clone())
+        .is_some();
     let result = state
         .terminals
         .open(app.clone(), config, &server_id, cols, rows)
@@ -409,7 +419,9 @@ async fn terminal_open(
     }
     let session_id = result.map_err(|error| format!("{:#}", error))?;
 
-    // 后台探测系统类型并写回配置，不阻塞终端打开
+    // 已探测过则不再为写回系统类型另开一条 SSH（跳板场景尤其慢）
+    if already_detected { return Ok(session_id); }
+
     let server_id_probe = server_id.clone();
     tokio::spawn(async move {
         let state: State<AppState> = app.state();
@@ -504,6 +516,11 @@ async fn sftp_upload(
     )
     .await
     .map_err(|error| map_sftp_error("upload", &server_id, &remote_path, error))
+}
+
+#[tauri::command]
+fn sftp_cancel_upload(transfer_id: String) {
+    sftp_browser::request_cancel(&transfer_id);
 }
 
 #[tauri::command]
@@ -857,6 +874,7 @@ pub fn run() {
             list_local_dir,
             sftp_list,
             sftp_upload,
+            sftp_cancel_upload,
             sftp_collect_local_files,
             sftp_disconnect,
             sftp_download,

@@ -84,6 +84,8 @@ export const api = {
       fileIndex,
       fileCount,
     }),
+  sftpCancelUpload: (transferId: string) =>
+    invoke<void>("sftp_cancel_upload", { transferId }),
   sftpCollectLocalFiles: (directory: string) =>
     invoke<LocalFileEntry[]>("sftp_collect_local_files", { directory }),
   sftpDisconnect: (serverId: string) =>

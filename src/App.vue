@@ -18,6 +18,7 @@ import DockerDeployView from "./views/DockerDeployView.vue";
 import SettingsView from "./views/SettingsView.vue";
 import { bus, OPEN_SSH_EVENT } from "./bus";
 import { sharedDeployTasks, type DeployTask } from "./composables/useTask";
+import { sftpTransfer } from "./composables/useSftpTransfer";
 
 const menus = [
   { key: "servers", label: "服务器", icon: Platform, component: ServersView },
@@ -37,7 +38,7 @@ const isTerminalActive = computed(() => activeKey.value === "terminal");
 const isKeepAlivePage = computed(() => keepAliveKeys.includes(activeKey.value));
 
 const floatingTasks = computed(() =>
-  sharedDeployTasks.filter((task) => {
+  [...sharedDeployTasks, sftpTransfer].filter((task) => {
     if (activeKey.value === task.pageKey) return false;
     if (task.running.value) return true;
     return Boolean(task.finalState.value) && !task.dismissed.value;
@@ -70,7 +71,10 @@ function floatStatus(task: DeployTask) {
   return undefined;
 }
 
-onMounted(() => bus.on(OPEN_SSH_EVENT, onOpenSsh));
+onMounted(() => {
+  bus.on(OPEN_SSH_EVENT, onOpenSsh);
+  sftpTransfer.ensureReady();
+});
 onUnmounted(() => bus.off(OPEN_SSH_EVENT, onOpenSsh));
 </script>
 
@@ -112,6 +116,8 @@ onUnmounted(() => bus.off(OPEN_SSH_EVENT, onOpenSsh));
         :status="floatStatus(task)"
       />
       <div class="deploy-float-step">{{ task.step.value || (task.running.value ? '进行中…' : '已结束') }}</div>
+      <div v-if="task.route?.value" class="deploy-float-route">{{ task.route.value }}</div>
+      <div v-if="task.detail?.value" class="deploy-float-step">{{ task.detail.value }}</div>
       <div class="deploy-float-actions">
         <el-button size="small" type="primary" @click="openTaskPage(task)">查看</el-button>
         <el-button v-if="task.running.value" size="small" type="danger" plain @click="task.cancel()">取消</el-button>
@@ -244,6 +250,15 @@ onUnmounted(() => bus.off(OPEN_SSH_EVENT, onOpenSsh));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.deploy-float-route {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--app-text);
+  white-space: pre-line;
+  word-break: break-all;
 }
 
 .deploy-float-actions {
