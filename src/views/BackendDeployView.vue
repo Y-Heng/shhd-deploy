@@ -3,7 +3,7 @@ import { computed, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api } from "../api";
-import { useTask } from "../composables/useTask";
+import { backendDeployTask } from "../composables/useTask";
 import TaskLogPanel from "../components/TaskLogPanel.vue";
 import type {
   AppConfig,
@@ -20,6 +20,8 @@ import {
   JAVA_STOP_SCRIPT,
 } from "../serviceScriptPresets";
 
+const props = defineProps<{ active?: boolean }>();
+
 const config = ref<AppConfig | null>(null);
 const releases = ref<ReleaseRecord[]>([]);
 const activeTab = ref("deploy");
@@ -32,7 +34,7 @@ const deployMode = ref<DeployMode>("full");
 const backupSibling = ref(true);
 const stagedReleaseName = ref("");
 
-const task = useTask();
+const task = backendDeployTask;
 
 const selectedGroup = computed<BackendGroup | null>(
   () =>
@@ -60,16 +62,29 @@ const stagedReleases = computed(() =>
 );
 
 onMounted(async () => {
+  await reloadPage();
+});
+
+watch(
+  () => props.active,
+  async (active) => {
+    if (!active) return;
+    task.dismissed.value = true;
+    await reloadPage();
+  }
+);
+
+async function reloadPage() {
   config.value = await api.getConfig();
-  // 兼容旧配置：把主/备字段迁移到 serverIds 列表，方便统一编辑
+  if (!config.value) return;
   for (const group of config.value.backendGroups) {
     if (!group.serverIds || group.serverIds.length === 0)
       group.serverIds = groupServerIds(group);
   }
   releases.value = await api.getReleases();
-  if (config.value.backendGroups.length > 0)
+  if (!selectedGroupId.value && config.value.backendGroups.length > 0)
     selectGroup(config.value.backendGroups[0].id);
-});
+}
 
 function selectGroup(groupId: string) {
   selectedGroupId.value = groupId;

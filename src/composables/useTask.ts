@@ -1,4 +1,4 @@
-import { onUnmounted, ref } from "vue";
+import { onUnmounted, ref, type Ref } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { api } from "../api";
 import type {
@@ -13,13 +13,28 @@ export interface LogLine {
   ts: string;
 }
 
-// 部署任务的日志与进度跟踪
-export function useTask() {
+export type TaskFinalState = "" | "success" | "failed" | "cancelled";
+
+export interface DeployTask {
+  title: string;
+  pageKey: string;
+  logs: Ref<LogLine[]>;
+  running: Ref<boolean>;
+  percent: Ref<number>;
+  step: Ref<string>;
+  finalState: Ref<TaskFinalState>;
+  dismissed: Ref<boolean>;
+  attach: (taskId: string) => Promise<void>;
+  cancel: () => Promise<void>;
+}
+
+function createTaskState(title: string, pageKey: string): DeployTask {
   const logs = ref<LogLine[]>([]);
   const running = ref(false);
   const percent = ref(0);
   const step = ref("");
-  const finalState = ref<"" | "success" | "failed" | "cancelled">("");
+  const finalState = ref<TaskFinalState>("");
+  const dismissed = ref(true);
 
   let currentTaskId = "";
   const unlisteners: UnlistenFn[] = [];
@@ -34,14 +49,13 @@ export function useTask() {
           message: event.payload.message,
           ts: event.payload.ts,
         });
-        // 防止日志无限增长
         if (logs.value.length > 3000) logs.value.splice(0, 500);
       }),
       await listen<TaskStatePayload>("task-state", (event) => {
         if (event.payload.taskId !== currentTaskId) return;
         if (event.payload.state === "running") return;
         running.value = false;
-        finalState.value = event.payload.state;
+        finalState.value = event.payload.state as TaskFinalState;
       }),
       await listen<TaskProgressPayload>("task-progress", (event) => {
         if (event.payload.taskId !== currentTaskId) return;
@@ -51,7 +65,6 @@ export function useTask() {
     );
   }
 
-  // 绑定新任务并开始收集其日志
   async function attach(taskId: string) {
     await setupListeners();
     currentTaskId = taskId;
@@ -59,6 +72,7 @@ export function useTask() {
     percent.value = 0;
     step.value = "";
     finalState.value = "";
+    dismissed.value = false;
     running.value = true;
   }
 
@@ -66,9 +80,22 @@ export function useTask() {
     if (currentTaskId) await api.cancelTask(currentTaskId);
   }
 
-  onUnmounted(() => {
+  function dispose() {
     for (const unlisten of unlisteners) unlisten();
-  });
+    unlisteners.length = 0;
+  }
 
-  return { logs, running, percent, step, finalState, attach, cancel };
+  return { title, pageKey, logs, running, percent, step, finalState, dismissed, attach, cancel, dispose };
 }
+
+// 部署任务的日志与进度跟踪（随页面卸载取消监听）
+export function useTask() {
+  const task = createTaskState("部署", "");
+  onUnmounted(() => task.dispose());
+  return task;
+}
+
+export const frontendDeployTask = createTaskState("前端部署", "frontend");
+export const backendDeployTask = createTaskState("后端部署", "backend");
+
+export const sharedDeployTasks = [frontendDeployTask, backendDeployTask];

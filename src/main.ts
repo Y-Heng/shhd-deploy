@@ -5,10 +5,14 @@ import "element-plus/dist/index.css";
 import "element-plus/theme-chalk/dark/css-vars.css";
 import "./styles/theme.css";
 import App from "./App.vue";
+import TermPopout from "./views/TermPopout.vue";
+import { parsePopoutHash } from "./sshTerminal";
 
-// 启用暗色主题
 document.documentElement.classList.add("dark");
 
-const app = createApp(App);
+const popout = parsePopoutHash();
+const app = popout
+  ? createApp(TermPopout, popout)
+  : createApp(App);
 app.use(ElementPlus, { locale: zhCn });
 app.mount("#app");

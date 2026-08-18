@@ -98,6 +98,10 @@ export interface FrontendTarget {
   deleteExtraneous: boolean;
   /** 环境分组，如 开发环境 / 正式环境 */
   group?: string | null;
+  /** 部署前本地打包命令，如 npm run build */
+  packCommand?: string | null;
+  /** 打包命令工作目录，留空则用 localDir 上一级 */
+  packWorkDir?: string | null;
 }
 
 export interface DockerTarget {

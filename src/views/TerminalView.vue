@@ -1,25 +1,30 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowRight, Close, Delete, EditPen, Folder, Plus, Search } from '@element-plus/icons-vue'
+import { ArrowRight, Close, Delete, EditPen, Folder, Loading, Plus, Search } from '@element-plus/icons-vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { api } from '../api'
-import { bus, OPEN_SSH_EVENT, sshConnectingId, syncActiveSshServerIds } from '../bus'
+import { bus, OPEN_SSH_EVENT, syncActiveSshServerIds, syncConnectingSshServerIds } from '../bus'
 import SftpPanel from '../components/SftpPanel.vue'
 import GripDots from '../components/GripDots.vue'
 import { dropPlaceByX, elementFromPointIgnoringDrag, isDropPlaceholder } from '../composables/groupedDragSort'
+import { createSshTerminal } from '../sshTerminal'
 import type { AppConfig, QuickCommand, ServerConfig, TermClosedPayload, TermDataPayload } from '../types'
 
 interface TermSession {
+  uiId: string
   sessionId: string
   serverId: string
   title: string
   terminal: Terminal
   fitAddon: FitAddon
   closed: boolean
+  connecting: boolean
+  popoutLabel: string
   panelMode: MainPanelMode
 }
 
@@ -34,13 +39,16 @@ const emptyQuickCommand = (): QuickCommand => ({
 })
 
 const config = ref<AppConfig | null>(null)
-const opening = ref(false)
 const sessions = ref<TermSession[]>([])
 const activeSessionId = ref('')
 const connectPopoverVisible = ref(false)
 const draggingSessionId = ref('')
 const dropHint = ref<{ sessionId: string; place: 'before' | 'after' } | null>(null)
+let lastPointerX = 0
+let lastPointerY = 0
 let suppressNextTabClick = false
+
+const visibleSessions = computed(() => sessions.value.filter(session => !session.popoutLabel))
 
 const contextMenuVisible = ref(false)
 const contextMenuX = ref(0)
@@ -121,15 +129,18 @@ async function reloadConfig() {
 }
 
 function getActiveSession(): TermSession | undefined {
-  return sessions.value.find(item => item.sessionId === activeSessionId.value)
+  return sessions.value.find(item => item.uiId === activeSessionId.value)
 }
 
-function syncActiveSshServers() {
+function syncSessionFlags() {
   const serverIds = new Set<string>()
+  const connectingIds = new Set<string>()
   for (const session of sessions.value) {
+    if (session.connecting) connectingIds.add(session.serverId)
     if (!session.closed) serverIds.add(session.serverId)
   }
   syncActiveSshServerIds(Array.from(serverIds))
+  syncConnectingSshServerIds(Array.from(connectingIds))
 }
 
 async function copySelection() {
@@ -221,8 +232,8 @@ function onContextPaste() {
 
 function fitActiveTerminal() {
   const session = getActiveSession()
-  if (!session || session.panelMode !== 'terminal') return
-  const container = document.getElementById(`term-${session.sessionId}`)
+  if (!session || session.panelMode !== 'terminal' || session.popoutLabel) return
+  const container = document.getElementById(`term-${session.uiId}`)
   if (!container || container.clientWidth < 40 || container.clientHeight < 40) return
   try {
     session.fitAddon.fit()
@@ -232,10 +243,10 @@ function fitActiveTerminal() {
 }
 
 function observeTerminalSize(session: TermSession, container: HTMLElement) {
-  terminalObservers.get(session.sessionId)?.disconnect()
+  terminalObservers.get(session.uiId)?.disconnect()
   const observer = new ResizeObserver(() => {
-    if (session.sessionId !== activeSessionId.value) return
-    if (session.panelMode !== 'terminal') return
+    if (session.uiId !== activeSessionId.value) return
+    if (session.panelMode !== 'terminal' || session.popoutLabel) return
     if (container.clientWidth < 40 || container.clientHeight < 40) return
     try {
       session.fitAddon.fit()
@@ -244,91 +255,73 @@ function observeTerminalSize(session: TermSession, container: HTMLElement) {
     }
   })
   observer.observe(container)
-  terminalObservers.set(session.sessionId, observer)
+  terminalObservers.set(session.uiId, observer)
 }
 
 async function openSessionForServer(serverId: string) {
-  if (sshConnectingId.value) return
-  sshConnectingId.value = serverId
-  opening.value = true
+  if (sessions.value.some(item => item.serverId === serverId && item.connecting)) return
   connectPopoverVisible.value = false
+  if (!config.value) await reloadConfig()
+  const server = config.value?.servers.find(item => item.id === serverId)
+  if (!server) {
+    ElMessage.error('找不到服务器配置')
+    return
+  }
+
+  const uiId = `pending-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  const { terminal, fitAddon } = createSshTerminal()
+  bindTerminalClipboard(terminal)
+  terminal.onData(data => {
+    const current = sessions.value.find(item => item.uiId === uiId)
+    if (!current || current.closed || current.connecting || !current.sessionId) return
+    api.terminalWrite(current.sessionId, data)
+  })
+  terminal.onResize(({ cols, rows }) => {
+    const current = sessions.value.find(item => item.uiId === uiId)
+    if (!current?.sessionId || current.connecting) return
+    api.terminalResize(current.sessionId, cols, rows)
+  })
+
+  const session: TermSession = {
+    uiId,
+    sessionId: '',
+    serverId: server.id,
+    title: server.name,
+    terminal,
+    fitAddon,
+    closed: false,
+    connecting: true,
+    popoutLabel: '',
+    panelMode: 'terminal'
+  }
+  sessions.value.push(session)
+  activeSessionId.value = uiId
+  syncSessionFlags()
+  await nextTick()
+  const container = document.getElementById(`term-${uiId}`)
+  if (container) {
+    terminal.open(container)
+    observeTerminalSize(session, container)
+    fitAddon.fit()
+  }
+  terminal.write(`\x1b[32m正在连接 ${server.name}（${server.host}:${server.port}）…\x1b[0m\r\n`)
+
   try {
-    await reloadConfig()
-    const server = config.value?.servers.find(item => item.id === serverId)
-    if (!server) {
-      ElMessage.error('找不到服务器配置')
-      return
-    }
-
     const sessionId = await api.terminalOpen(server.id, 120, 30)
-    const terminal = new Terminal({
-      fontFamily: 'Cascadia Code, Consolas, Menlo, Monaco, monospace',
-      fontSize: 14,
-      cursorBlink: false,
-      cursorStyle: 'block',
-      scrollback: 5000,
-      rightClickSelectsWord: false,
-      theme: {
-        background: '#1e1e2e',
-        foreground: '#3dd68c',
-        cursor: '#3dd68c',
-        cursorAccent: '#1e1e2e',
-        // 选中高亮不能和调色板 black 相同，否则 Windows cmd 整屏用黑色背景时看不见选区
-        selectionBackground: '#4a7ec8',
-        selectionInactiveBackground: '#355a8c',
-        selectionForeground: '#eef4ff',
-        black: '#1e1e2e',
-        red: '#f38ba8',
-        green: '#3dd68c',
-        yellow: '#f9e2af',
-        blue: '#89b4fa',
-        magenta: '#e84e7f',
-        cyan: '#89dceb',
-        white: '#3dd68c',
-        brightBlack: '#585b70',
-        brightRed: '#f38ba8',
-        brightGreen: '#3dd68c',
-        brightYellow: '#f9e2af',
-        brightBlue: '#89b4fa',
-        brightMagenta: '#e84e7f',
-        brightCyan: '#89dceb',
-        brightWhite: '#3dd68c'
-      }
-    })
-    const fitAddon = new FitAddon()
-    terminal.loadAddon(fitAddon)
-    bindTerminalClipboard(terminal)
-
-    terminal.onData(data => {
-      if (!sessions.value.find(item => item.sessionId === sessionId)?.closed) api.terminalWrite(sessionId, data)
-    })
-    terminal.onResize(({ cols, rows }) => api.terminalResize(sessionId, cols, rows))
-
-    sessions.value.push({
-      sessionId,
-      serverId: server.id,
-      title: server.name,
-      terminal,
-      fitAddon,
-      closed: false,
-      panelMode: 'terminal'
-    })
-    syncActiveSshServers()
-    activeSessionId.value = sessionId
-
+    session.sessionId = sessionId
+    session.connecting = false
+    syncSessionFlags()
     await nextTick()
-    const container = document.getElementById(`term-${sessionId}`)
-    if (container) {
-      terminal.open(container)
-      observeTerminalSize(sessions.value[sessions.value.length - 1], container)
-      fitAddon.fit()
-      terminal.focus()
-    }
+    fitAddon.fit()
+    terminal.focus()
   } catch (error) {
     ElMessage.error(String(error))
-  } finally {
-    opening.value = false
-    sshConnectingId.value = ''
+    terminal.dispose()
+    terminalObservers.get(uiId)?.disconnect()
+    terminalObservers.delete(uiId)
+    sessions.value = sessions.value.filter(item => item.uiId !== uiId)
+    if (activeSessionId.value === uiId) activeSessionId.value = visibleSessions.value[visibleSessions.value.length - 1]?.uiId ?? ''
+    syncSessionFlags()
   }
 }
 
@@ -338,43 +331,49 @@ function onOpenSshRequest(payload: unknown) {
   openSessionForServer(serverId)
 }
 
-async function closeSession(sessionId: string) {
-  const index = sessions.value.findIndex(item => item.sessionId === sessionId)
+async function closeSession(uiId: string) {
+  const index = sessions.value.findIndex(item => item.uiId === uiId)
   if (index < 0) return
   const session = sessions.value[index]
   const serverId = session.serverId
-  await api.terminalClose(session.sessionId)
+  if (session.popoutLabel) {
+    const popped = await WebviewWindow.getByLabel(session.popoutLabel)
+    await popped?.close()
+  }
+  if (session.sessionId) await api.terminalClose(session.sessionId)
   session.terminal.dispose()
   sessions.value.splice(index, 1)
-  syncActiveSshServers()
-  sftpPanelMap.delete(sessionId)
-  terminalObservers.get(sessionId)?.disconnect()
-  terminalObservers.delete(sessionId)
+  syncSessionFlags()
+  sftpPanelMap.delete(uiId)
+  terminalObservers.get(uiId)?.disconnect()
+  terminalObservers.delete(uiId)
   const stillUsed = sessions.value.some(item => item.serverId === serverId)
   if (!stillUsed) await api.sftpDisconnect(serverId)
-  if (activeSessionId.value === sessionId) activeSessionId.value = sessions.value[sessions.value.length - 1]?.sessionId ?? ''
+  if (activeSessionId.value === uiId) activeSessionId.value = visibleSessions.value[visibleSessions.value.length - 1]?.uiId ?? ''
   await nextTick()
   fitActiveTerminal()
 }
 
-async function activateSession(sessionId: string) {
+async function activateSession(uiId: string) {
   if (suppressNextTabClick) {
     suppressNextTabClick = false
     return
   }
-  if (activeSessionId.value === sessionId) return
-  activeSessionId.value = sessionId
+  if (activeSessionId.value === uiId) return
+  activeSessionId.value = uiId
   await nextTick()
   fitActiveTerminal()
   const session = getActiveSession()
-  if (session) session.terminal.focus()
+  if (session && !session.connecting) session.terminal.focus()
 }
 
-function onTabGripPointerDown(sessionId: string, event: PointerEvent) {
+function onTabGripPointerDown(uiId: string, event: PointerEvent) {
   if (event.button !== 0) return
   event.preventDefault()
   event.stopPropagation()
-  draggingSessionId.value = sessionId
+  draggingSessionId.value = uiId
+  lastPointerX = event.clientX
+  lastPointerY = event.clientY
   suppressNextTabClick = true
   const grip = event.currentTarget as HTMLElement
   if (grip.setPointerCapture) grip.setPointerCapture(event.pointerId)
@@ -384,13 +383,15 @@ function onTabGripPointerDown(sessionId: string, event: PointerEvent) {
 
 function onTabPointerMove(event: PointerEvent) {
   if (!draggingSessionId.value) return
+  lastPointerX = event.clientX
+  lastPointerY = event.clientY
   const hit = elementFromPointIgnoringDrag(event.clientX, event.clientY)
   if (isDropPlaceholder(hit)) return
   const tab = hit instanceof Element ? hit.closest('.session-tab') : null
   if (!(tab instanceof HTMLElement) || !tab.dataset.sessionId) {
     const bar = document.querySelector('.session-tabs')
-    const lastSession = sessions.value[sessions.value.length - 1]
-    if (bar && hit instanceof Node && bar.contains(hit) && lastSession && lastSession.sessionId !== draggingSessionId.value) dropHint.value = { sessionId: lastSession.sessionId, place: 'after' }
+    const lastSession = visibleSessions.value[visibleSessions.value.length - 1]
+    if (bar && hit instanceof Node && bar.contains(hit) && lastSession && lastSession.uiId !== draggingSessionId.value) dropHint.value = { sessionId: lastSession.uiId, place: 'after' }
     return
   }
   const sessionId = tab.dataset.sessionId
@@ -401,23 +402,66 @@ function onTabPointerMove(event: PointerEvent) {
   dropHint.value = { sessionId, place: dropPlaceByX(event.clientX, tab) }
 }
 
-function onTabPointerUp() {
+async function onTabPointerUp() {
   window.removeEventListener('pointermove', onTabPointerMove)
   window.removeEventListener('pointerup', onTabPointerUp)
   const fromId = draggingSessionId.value
   const hint = dropHint.value
   draggingSessionId.value = ''
   dropHint.value = null
-  if (!fromId || !hint || fromId === hint.sessionId) return
+  if (!fromId) return
+  const tabBar = document.querySelector('.session-tabs')
+  const hit = document.elementFromPoint(lastPointerX, lastPointerY)
+  const outsideBar = !(tabBar instanceof Element && hit instanceof Node && tabBar.contains(hit))
+  if (outsideBar) {
+    await popoutSession(fromId)
+    return
+  }
+  if (!hint || fromId === hint.sessionId) return
   const list = [...sessions.value]
-  const fromIndex = list.findIndex(item => item.sessionId === fromId)
+  const fromIndex = list.findIndex(item => item.uiId === fromId)
   if (fromIndex < 0) return
   const [moving] = list.splice(fromIndex, 1)
-  let toIndex = list.findIndex(item => item.sessionId === hint.sessionId)
+  let toIndex = list.findIndex(item => item.uiId === hint.sessionId)
   if (toIndex < 0) return
   if (hint.place === 'after') toIndex += 1
   list.splice(toIndex, 0, moving)
   sessions.value = list
+}
+
+async function popoutSession(uiId: string) {
+  const session = sessions.value.find(item => item.uiId === uiId)
+  if (!session || session.connecting || session.closed || !session.sessionId || session.popoutLabel) return
+  const label = `term-${session.sessionId}`
+  const params = new URLSearchParams({
+    sessionId: session.sessionId,
+    title: session.title,
+    serverId: session.serverId
+  })
+  const webview = new WebviewWindow(label, {
+    url: `/#/popout-term?${params.toString()}`,
+    title: `${session.title} - SSH`,
+    width: 980,
+    height: 640,
+    minWidth: 640,
+    minHeight: 420,
+    focus: true
+  })
+  session.popoutLabel = label
+  if (activeSessionId.value === uiId) {
+    const remain = visibleSessions.value.find(item => item.uiId !== uiId)
+    activeSessionId.value = remain?.uiId ?? ''
+  }
+  const dockBack = () => {
+    session.popoutLabel = ''
+    if (!visibleSessions.value.some(item => item.uiId === activeSessionId.value)) activeSessionId.value = session.uiId
+    nextTick(() => fitActiveTerminal())
+  }
+  await webview.once('tauri://error', event => {
+    session.popoutLabel = ''
+    ElMessage.error(`弹出窗口失败：${event.payload ?? event}`)
+  })
+  await webview.once('tauri://destroyed', dockBack)
 }
 
 function isTabDropHint(sessionId: string, place: 'before' | 'after') {
@@ -443,8 +487,8 @@ function runQuickCommand(item: QuickCommand) {
     ElMessage.warning('请先打开 SSH 会话')
     return
   }
-  if (session.closed) {
-    ElMessage.warning('当前会话已断开')
+  if (session.closed || session.connecting) {
+    ElMessage.warning(session.connecting ? '正在连接，请稍候' : '当前会话已断开')
     return
   }
   // Run：发送命令并回车执行
@@ -459,8 +503,8 @@ function pasteQuickCommand(item: QuickCommand) {
     ElMessage.warning('请先打开 SSH 会话')
     return
   }
-  if (session.closed) {
-    ElMessage.warning('当前会话已断开')
+  if (session.closed || session.connecting) {
+    ElMessage.warning(session.connecting ? '正在连接，请稍候' : '当前会话已断开')
     return
   }
   // Paste：只粘贴不回车，便于改参数
@@ -547,6 +591,10 @@ function openSftpPanel() {
   if (!session) {
     ElMessage.warning('请先打开终端会话')
     connectPopoverVisible.value = true
+    return
+  }
+  if (session.connecting) {
+    ElMessage.warning('正在连接，请稍候')
     return
   }
   if (session.panelMode === 'sftp') return
@@ -687,8 +735,9 @@ onMounted(async () => {
       const session = sessions.value.find(item => item.sessionId === event.payload.sessionId)
       if (!session || session.closed) return
       session.closed = true
+      session.connecting = false
       session.terminal.write('\r\n\x1b[31m[会话已断开]\x1b[0m\r\n')
-      syncActiveSshServers()
+      syncSessionFlags()
     })
   )
 
@@ -707,11 +756,12 @@ onUnmounted(() => {
   for (const observer of terminalObservers.values()) observer.disconnect()
   terminalObservers.clear()
   for (const session of sessions.value) {
-    api.terminalClose(session.sessionId)
+    if (session.sessionId) api.terminalClose(session.sessionId)
     session.terminal.dispose()
     api.sftpDisconnect(session.serverId)
   }
   syncActiveSshServerIds([])
+  syncConnectingSshServerIds([])
 })
 </script>
 
@@ -720,36 +770,39 @@ onUnmounted(() => {
     <!-- 顶栏：会话标签 + 新建 -->
     <div class="term-topbar">
       <div class="session-tabs">
-        <template v-for="session in sessions" :key="session.sessionId">
-          <div v-if="isTabDropHint(session.sessionId, 'before')" class="drop-placeholder is-tab" />
+        <template v-for="session in visibleSessions" :key="session.uiId">
+          <div v-if="isTabDropHint(session.uiId, 'before')" class="drop-placeholder is-tab" />
           <div
             role="button"
             tabindex="0"
             class="session-tab"
-            :data-session-id="session.sessionId"
+            :data-session-id="session.uiId"
             :class="{
-              active: session.sessionId === activeSessionId,
+              active: session.uiId === activeSessionId,
               closed: session.closed,
-              'is-dragging': draggingSessionId === session.sessionId
+              connecting: session.connecting,
+              'is-dragging': draggingSessionId === session.uiId
             }"
-            @click="activateSession(session.sessionId)"
-            @keydown.enter.prevent="activateSession(session.sessionId)"
+            :title="session.connecting ? '正在连接…' : '拖动标签排序，拖出标签栏可弹出独立窗口'"
+            @click="activateSession(session.uiId)"
+            @keydown.enter.prevent="activateSession(session.uiId)"
           >
-            <span class="session-dot" />
+            <el-icon v-if="session.connecting" class="session-loading is-loading"><Loading /></el-icon>
+            <span v-else class="session-dot" />
             <span class="session-title">{{ session.title }}</span>
-            <span class="drag-grip" title="拖动标签排序" @pointerdown.stop="onTabGripPointerDown(session.sessionId, $event)" @click.stop>
+            <span class="drag-grip" title="拖动标签排序 / 拖出弹出" @pointerdown.stop="onTabGripPointerDown(session.uiId, $event)" @click.stop>
               <GripDots />
             </span>
-            <span class="session-close" title="关闭" @click.stop="closeSession(session.sessionId)">
+            <span class="session-close" title="关闭" @click.stop="closeSession(session.uiId)">
               <el-icon :size="12"><Close /></el-icon>
             </span>
           </div>
-          <div v-if="isTabDropHint(session.sessionId, 'after')" class="drop-placeholder is-tab" />
+          <div v-if="isTabDropHint(session.uiId, 'after')" class="drop-placeholder is-tab" />
         </template>
 
         <el-popover v-model:visible="connectPopoverVisible" placement="bottom-start" :width="320" trigger="click" popper-class="connect-popover">
           <template #reference>
-            <button type="button" class="session-add" :disabled="opening" title="新建会话">
+            <button type="button" class="session-add" title="新建会话">
               <el-icon :size="16"><Plus /></el-icon>
             </button>
           </template>
@@ -757,7 +810,7 @@ onUnmounted(() => {
             <div class="connect-panel-title">选择服务器</div>
             <div v-for="[groupName, servers] in groupedServers" :key="groupName" class="connect-group">
               <div class="connect-group-name">{{ groupName }}</div>
-              <button v-for="server in servers" :key="server.id" type="button" class="connect-server" :disabled="Boolean(sshConnectingId)" @click="openSessionForServer(server.id)">
+              <button v-for="server in servers" :key="server.id" type="button" class="connect-server" :disabled="sessions.some(item => item.serverId === server.id && item.connecting)" @click="openSessionForServer(server.id)">
                 <span>{{ server.name }}</span>
                 <span class="connect-meta">{{ server.host }}:{{ server.port }}</span>
               </button>
@@ -778,20 +831,26 @@ onUnmounted(() => {
 
     <div class="term-body">
       <div class="term-workspace">
-        <div v-if="sessions.length === 0" class="term-empty">
+        <div v-if="visibleSessions.length === 0" class="term-empty">
           <div class="term-empty-title">SSH 终端</div>
-          <div class="term-empty-desc">点击左上角 + 选择服务器，或在「服务器」页直接点击连接</div>
-          <el-button type="primary" :loading="opening" @click="connectPopoverVisible = true"> 新建会话 </el-button>
+          <div class="term-empty-desc">
+            {{ sessions.length ? '会话已弹出为独立窗口，关闭窗口后会回到这里' : '点击左上角 + 选择服务器，或在「服务器」页直接点击连接' }}
+          </div>
+          <el-button v-if="!sessions.length" type="primary" @click="connectPopoverVisible = true"> 新建会话 </el-button>
         </div>
 
-        <div v-for="session in sessions" v-show="session.sessionId === activeSessionId" :key="session.sessionId" class="session-workspace">
+        <div v-for="session in sessions" v-show="session.uiId === activeSessionId && !session.popoutLabel" :key="session.uiId" class="session-workspace">
           <div v-show="session.panelMode === 'terminal'" class="term-main">
             <div class="terminal-frame">
-              <div :id="`term-${session.sessionId}`" class="terminal-container" @contextmenu="onTerminalContextMenu" />
+              <div v-if="session.connecting" class="term-connecting">
+                <el-icon class="is-loading" :size="22"><Loading /></el-icon>
+                <span>正在连接 {{ session.title }}…</span>
+              </div>
+              <div :id="`term-${session.uiId}`" class="terminal-container" :class="{ 'is-connecting': session.connecting }" @contextmenu="onTerminalContextMenu" />
             </div>
           </div>
           <div v-show="session.panelMode === 'sftp'" class="sftp-main">
-            <SftpPanel :ref="element => bindSftpPanel(session.sessionId, element)" :server-id="session.serverId" :server-name="session.title" :active="session.panelMode === 'sftp' && session.sessionId === activeSessionId" />
+            <SftpPanel :ref="element => bindSftpPanel(session.uiId, element)" :server-id="session.serverId" :server-name="session.title" :active="session.panelMode === 'sftp' && session.uiId === activeSessionId && !session.popoutLabel" />
           </div>
         </div>
       </div>
@@ -975,6 +1034,12 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
+.session-loading {
+  font-size: 14px;
+  color: var(--term-accent);
+  flex-shrink: 0;
+}
+
 .session-title {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1134,6 +1199,24 @@ onUnmounted(() => {
   border-radius: 0px;
   overflow: hidden;
   background: #1e1e2e;
+  position: relative;
+}
+
+.term-connecting {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--term-accent);
+  background: rgba(30, 30, 46, 0.88);
+  font-size: 14px;
+}
+
+.terminal-container.is-connecting {
+  opacity: 0.35;
 }
 
 .term-empty {

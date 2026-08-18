@@ -198,6 +198,12 @@ pub struct FrontendTarget {
     /// 环境分组（如 开发环境 / 正式环境）
     #[serde(default)]
     pub group: Option<String>,
+    /// 部署前在本地执行的打包命令（如 npm run build），留空则跳过
+    #[serde(default)]
+    pub pack_command: Option<String>,
+    /// 打包命令工作目录，留空则用 local_dir 的上一级
+    #[serde(default)]
+    pub pack_work_dir: Option<String>,
 }
 
 /// Docker 部署目标
@@ -628,6 +634,8 @@ fn default_template() -> AppConfig {
             staging_dir: None,
             delete_extraneous: false,
             group: Some("开发环境".into()),
+            pack_command: None,
+            pack_work_dir: None,
         }],
         docker_targets: vec![DockerTarget {
             id: "zx-infra".into(),

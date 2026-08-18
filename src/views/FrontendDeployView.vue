@@ -3,7 +3,7 @@ import { computed, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api } from "../api";
-import { useTask } from "../composables/useTask";
+import { frontendDeployTask } from "../composables/useTask";
 import TaskLogPanel from "../components/TaskLogPanel.vue";
 import type {
   AppConfig,
@@ -13,6 +13,8 @@ import type {
 } from "../types";
 
 const PRESET_GROUPS = ["开发环境", "正式环境"];
+
+const props = defineProps<{ active?: boolean }>();
 
 const config = ref<AppConfig | null>(null);
 const selectedTargetIds = ref<string[]>([]);
@@ -39,9 +41,11 @@ const editForm = reactive<FrontendTarget>({
   stagingDir: "",
   deleteExtraneous: false,
   group: "开发环境",
+  packCommand: "",
+  packWorkDir: "",
 });
 
-const task = useTask();
+const task = frontendDeployTask;
 
 const groupOptions = computed(() => {
   const names = new Set(PRESET_GROUPS);
@@ -56,11 +60,24 @@ const visibleTargets = computed(() =>
 );
 
 onMounted(async () => {
+  await reloadPage();
+});
+
+watch(
+  () => props.active,
+  async (active) => {
+    if (!active) return;
+    task.dismissed.value = true;
+    await reloadPage();
+  }
+);
+
+async function reloadPage() {
   config.value = await api.getConfig();
   await refreshReleases();
   const groups = groupOptions.value;
   if (!groups.includes(selectedGroup.value) && groups.length > 0) selectedGroup.value = groups[0];
-});
+}
 
 watch(selectedGroup, () => {
   selectedTargetIds.value = [];
@@ -156,6 +173,8 @@ function openAddDialog() {
     stagingDir: "",
     deleteExtraneous: false,
     group: selectedGroup.value === "未分组" ? "开发环境" : selectedGroup.value,
+    packCommand: "",
+    packWorkDir: "",
   });
   dialogVisible.value = true;
 }
@@ -165,6 +184,8 @@ function openEditDialog(target: FrontendTarget) {
   Object.assign(editForm, JSON.parse(JSON.stringify(target)));
   if (editForm.stagingDir == null) editForm.stagingDir = "";
   if (!editForm.group) editForm.group = "未分组";
+  if (!editForm.packCommand) editForm.packCommand = "";
+  if (!editForm.packWorkDir) editForm.packWorkDir = "";
   dialogVisible.value = true;
 }
 
@@ -187,6 +208,8 @@ async function saveTarget() {
   const clone: FrontendTarget = JSON.parse(JSON.stringify(editForm));
   if (!clone.stagingDir || !clone.stagingDir.trim()) clone.stagingDir = null;
   clone.group = clone.group?.trim() || "开发环境";
+  clone.packCommand = clone.packCommand?.trim() || null;
+  clone.packWorkDir = clone.packWorkDir?.trim() || null;
   if (isNewTarget.value) {
     config.value.frontendTargets.push(clone);
   } else {
@@ -294,7 +317,12 @@ async function startRollback(record: FrontendReleaseRecord) {
                 <el-checkbox :value="row.id"><span /></el-checkbox>
               </template>
             </el-table-column>
-            <el-table-column prop="name" label="项目" min-width="160" />
+            <el-table-column prop="name" label="项目" min-width="160">
+              <template #default="{ row }">
+                <span>{{ row.name }}</span>
+                <el-tag v-if="row.packCommand" size="small" effect="plain" style="margin-left: 8px">打包</el-tag>
+              </template>
+            </el-table-column>
             <el-table-column prop="localDir" label="本地目录" min-width="260" show-overflow-tooltip />
             <el-table-column prop="remoteDir" label="服务器目录" min-width="220" show-overflow-tooltip />
             <el-table-column label="服务器" min-width="160">
@@ -407,6 +435,12 @@ async function startRollback(record: FrontendReleaseRecord) {
               <el-button @click="chooseLocalDir">选择</el-button>
             </template>
           </el-input>
+        </el-form-item>
+        <el-form-item label="打包命令">
+          <el-input v-model="editForm.packCommand" placeholder="可选，如 npm run build / pnpm build" />
+        </el-form-item>
+        <el-form-item v-if="editForm.packCommand?.trim()" label="命令目录">
+          <el-input v-model="editForm.packWorkDir" placeholder="留空则用本地目录的上一级（适合 dist）" />
         </el-form-item>
         <el-form-item label="服务器目录">
           <el-input

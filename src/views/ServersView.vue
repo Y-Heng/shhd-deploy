@@ -8,10 +8,10 @@ import {
   activeRdpServerIds,
   activeSshServerIds,
   bus,
+  connectingSshServerIds,
   markRdpActive,
   markRdpInactive,
   OPEN_SSH_EVENT,
-  sshConnectingId,
 } from "../bus";
 import OsIcons from "../components/OsIcons.vue";
 import GripDots from "../components/GripDots.vue";
@@ -141,7 +141,7 @@ function isRdpInUse(serverId: string) {
 }
 
 function isConnectingSsh(serverId: string) {
-  return sshConnectingId.value === serverId && !isSshInUse(serverId);
+  return connectingSshServerIds.value.includes(serverId);
 }
 
 function toggleGroup(groupName: string) {
@@ -260,7 +260,7 @@ async function openRemoteDesktop(server: ServerConfig) {
 }
 
 function connectSsh(server: ServerConfig) {
-  if (sshConnectingId.value) return;
+  if (isConnectingSsh(server.id)) return;
   bus.emit(OPEN_SSH_EVENT, server.id);
 }
 
@@ -483,7 +483,7 @@ function isDropHint(groupName: string, serverId: string | undefined, place: stri
           @mouseleave="hoveredServerId = ''"
           @dblclick="connectSsh(server)"
         >
-          <button type="button" class="host-main" :disabled="Boolean(sshConnectingId)" @click="connectSsh(server)">
+          <button type="button" class="host-main" :disabled="isConnectingSsh(server.id)" @click="connectSsh(server)">
             <div class="host-icon" :class="iconTone(server)">
               <OsIcons :os="effectiveOs(server)" :size="24" />
             </div>
@@ -500,8 +500,8 @@ function isDropHint(groupName: string, serverId: string | undefined, place: stri
           <div class="host-actions" :class="{ show: hoveredServerId === server.id }">
             <el-button
               type="success"
-              :loading="sshConnectingId === server.id"
-              :disabled="Boolean(sshConnectingId)"
+              :loading="isConnectingSsh(server.id)"
+              :disabled="isConnectingSsh(server.id)"
               @click.stop="connectSsh(server)"
             >
               SSH

@@ -24,8 +24,12 @@ export const bus = {
 /** 打开指定服务器的 SSH 会话 */
 export const OPEN_SSH_EVENT = "open-ssh";
 
-/** 正在建立 SSH 连接的服务器 ID，防止连点开出多个会话 */
-export const sshConnectingId = ref("");
+/** 正在建立 SSH 连接的服务器 ID 列表 */
+export const connectingSshServerIds = ref<string[]>([]);
+
+export function syncConnectingSshServerIds(serverIds: string[]) {
+  connectingSshServerIds.value = serverIds;
+}
 
 /** 当前有未断开 SSH 会话的服务器 ID */
 export const activeSshServerIds = ref<string[]>([]);

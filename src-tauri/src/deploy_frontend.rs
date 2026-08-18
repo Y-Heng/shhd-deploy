@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 use tokio_util::sync::CancellationToken;
 
 /// 前端部署选项
@@ -121,6 +121,111 @@ fn native_path(os: OsType, path: &str) -> String {
         OsType::Windows => path.replace('/', "\\"),
         OsType::Linux => path.replace('\\', "/"),
     }
+}
+
+fn pack_work_dir(target: &crate::config::FrontendTarget) -> PathBuf {
+    if let Some(dir) = target
+        .pack_work_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return PathBuf::from(dir);
+    }
+    let local_dir = PathBuf::from(&target.local_dir);
+    local_dir
+        .parent()
+        .map(|parent| parent.to_path_buf())
+        .unwrap_or(local_dir)
+}
+
+fn target_pack_command(target: &crate::config::FrontendTarget) -> Option<String> {
+    let command = target.pack_command.as_deref()?.trim();
+    if command.is_empty() { None } else { Some(command.to_string()) }
+}
+
+fn spawn_pack_command(command: &str, work_dir: &Path) -> Result<tokio::process::Child> {
+    if !work_dir.is_dir() {
+        bail!("打包工作目录不存在: {}", work_dir.display());
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        let mut command_builder = std::process::Command::new("cmd");
+        command_builder
+            .args(["/C", command])
+            .current_dir(work_dir)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .creation_flags(CREATE_NO_WINDOW);
+        tokio::process::Command::from(command_builder)
+            .kill_on_drop(true)
+            .spawn()
+            .with_context(|| format!("启动打包命令失败: {}", command))
+    }
+    #[cfg(not(windows))]
+    {
+        tokio::process::Command::new("sh")
+            .args(["-c", command])
+            .current_dir(work_dir)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .with_context(|| format!("启动打包命令失败: {}", command))
+    }
+}
+
+async fn pipe_pack_output(
+    reader: impl tokio::io::AsyncRead + Unpin,
+    logger: TaskLogger,
+    as_warn: bool,
+) {
+    let mut lines = BufReader::new(reader).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        let text = line.trim_end().to_string();
+        if text.is_empty() { continue; }
+        if as_warn { logger.warn(text); } else { logger.info(text); }
+    }
+}
+
+async fn run_pack_command(
+    command: &str,
+    work_dir: &Path,
+    logger: &TaskLogger,
+    cancel: &CancellationToken,
+) -> Result<()> {
+    logger.info(format!(
+        "执行打包命令：{} （目录 {}）",
+        command,
+        work_dir.display()
+    ));
+    let mut child = spawn_pack_command(command, work_dir)?;
+    if let Some(stdout) = child.stdout.take() {
+        let logger = logger.clone();
+        tokio::spawn(async move { pipe_pack_output(stdout, logger, false).await });
+    }
+    if let Some(stderr) = child.stderr.take() {
+        let logger = logger.clone();
+        tokio::spawn(async move { pipe_pack_output(stderr, logger, true).await });
+    }
+    let status = tokio::select! {
+        _ = cancel.cancelled() => {
+            let _ = child.kill().await;
+            bail!("任务已被取消");
+        }
+        status = child.wait() => status.context("等待打包命令退出失败")?,
+    };
+    if !status.success() {
+        bail!(
+            "打包命令失败（退出码 {}）：{}",
+            status.code().map(|code| code.to_string()).unwrap_or_else(|| "未知".into()),
+            command
+        );
+    }
+    logger.success("打包命令执行成功");
+    Ok(())
 }
 
 fn parent_dir(path: &str) -> String {
@@ -798,7 +903,15 @@ async fn deploy_frontend_targets(
     } else {
         targets.len()
     };
-    let pack_share = if pack_count > 0 { 8.0 } else { 0.0 };
+    let has_pack_command = pack_count > 0
+        && targets.iter().any(|target| target_pack_command(target).is_some());
+    let pack_share = if pack_count == 0 {
+        0.0
+    } else if has_pack_command {
+        24.0
+    } else {
+        8.0
+    };
     let pack_each = if pack_count > 0 {
         pack_share / pack_count as f64
     } else {
@@ -807,6 +920,7 @@ async fn deploy_frontend_targets(
     let per_server = (100.0 - pack_share) / server_count as f64;
     let mut packed_done = 0usize;
     let mut finished_servers = 0usize;
+    let mut ran_pack_commands = std::collections::HashSet::<String>::new();
 
     for target in targets {
         if cancel.is_cancelled() {
@@ -821,6 +935,22 @@ async fn deploy_frontend_targets(
                 start: packed_done as f64 * pack_each,
                 end: (packed_done as f64 + 1.0) * pack_each,
             };
+            if let Some(command) = target_pack_command(target) {
+                let work_dir = pack_work_dir(target);
+                let command_key = format!("{}||{}", work_dir.to_string_lossy(), command);
+                if ran_pack_commands.insert(command_key) {
+                    with_heartbeat(
+                        logger,
+                        cancel,
+                        &pack_span,
+                        &format!("[{}] 执行打包命令 {}", target.name, command),
+                        run_pack_command(&command, &work_dir, logger, cancel),
+                    )
+                    .await?;
+                } else {
+                    logger.info(format!("[{}] 打包命令已执行过，跳过", target.name));
+                }
+            }
             let archive_id = uuid::Uuid::new_v4().to_string();
             let local_zip = std::env::temp_dir().join(format!("shhd-fe-{}.zip", archive_id));
             let source_dir = PathBuf::from(&target.local_dir);
