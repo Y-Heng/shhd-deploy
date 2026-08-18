@@ -62,15 +62,11 @@ impl TerminalManager {
             .request_pty(true, "xterm-256color", cols.max(20), rows.max(5), 0, 0, &[])
             .await
             .context("申请 PTY 失败")?;
+        channel.request_shell(true).await.context("启动 shell 失败")?;
 
+        // Windows OpenSSH 交互必须走 shell（exec cmd 配 ConPTY 会空白无提示符）
         if conn.server.os == OsType::Windows {
-            // 强制 cmd：跳过可能被设成 powershell 的 DefaultShell，/d 跳过 AutoRun
-            channel
-                .exec(true, "cmd.exe /d /q /k chcp 65001>nul")
-                .await
-                .context("启动 Windows cmd 失败")?;
-        } else {
-            channel.request_shell(true).await.context("启动 shell 失败")?;
+            let _ = channel.data(&b"chcp 65001\r\n"[..]).await;
         }
         crate::logger::append_log(&format!(
             "terminal 会话就绪 [{}] {} ms",

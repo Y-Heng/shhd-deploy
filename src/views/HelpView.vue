@@ -134,6 +134,7 @@ onMounted(async () => {
           <ul>
             <li><b>连不上 Windows 服务器</b>：确认已开启 OpenSSH Server，且端口填的是 <b>22</b>（不是 RDP 的 3389）。管理员 PowerShell：<code>Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0</code> 后 <code>Start-Service sshd</code>。</li>
             <li><b>Windows SSH 比 Linux 慢</b>：本工具已改为用 cmd 开终端、用 <code>ver</code> 探测系统，避免拉起 PowerShell/WMI。若握手本身仍要好几秒，多半是服务器 <code>sshd_config</code> 里 <code>UseDNS yes</code> 在做反向解析，改为 <code>UseDNS no</code> 后重启 sshd 即可。</li>
+            <li><b>后端部署很慢</b>：部署走的是服务器上的<b>跳板机</b>（SSH ProxyJump），不是「隧道」页那种把端口映射到本机。包会先传到 Linux 跳板机，再从跳板机内网拷到 Windows。请确认 Windows 服务器已填写跳板机；没填则会直连内网 IP，在办公网外会又慢又容易失败。</li>
             <li><b>提示"主机密钥指纹变化"</b>：说明服务器重装过或存在风险。确认无误后删除配置目录下 known_hosts.json 中对应记录。</li>
             <li><b>隧道端口被占用</b>：换个本地端口，或找到占用进程关掉。</li>
             <li><b>替换提示文件被占用</b>：到「项目配置」填入 IIS 或 Java 停止/启动脚本。IIS 方案只停本项目站点/程序池；Java 方案请改成实际 Windows 服务名。SSH 账号需要有管理对应服务的权限。</li>

@@ -6,8 +6,10 @@ use russh::client::{self, Handle};
 use russh::keys::{key, load_secret_key};
 use russh::ChannelMsg;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// 主机指纹存储（TOFU：首次连接记录指纹，之后指纹变化则拒绝，防中间人）
 fn load_known_hosts() -> HashMap<String, String> {
@@ -64,11 +66,47 @@ pub struct SshConnection {
     pub server: ServerConfig,
     /// 跳板机会话必须保持存活，否则链路中断
     _parents: Vec<Handle<SshHandler>>,
+    /// 直连上一跳跳板机配置（用于先把文件传到跳板再内网拷贝）
+    pub jump_server: Option<ServerConfig>,
 }
 
 impl SshConnection {
     pub fn is_closed(&self) -> bool {
         self.handle.is_closed()
+    }
+
+    pub fn nearest_jump_handle(&self) -> Option<&Handle<SshHandler>> {
+        self._parents.last()
+    }
+}
+
+/// 说明本机到该服务器怎么走（跳板机 ≠ 隧道页的端口映射）
+pub fn describe_route(config: &AppConfig, server: &ServerConfig) -> String {
+    match &server.jump_server_id {
+        Some(jump_id) => {
+            let jump_name = config
+                .find_server(jump_id)
+                .map(|jump| jump.name.as_str())
+                .unwrap_or(jump_id);
+            format!(
+                "经跳板机 {} → {} ({}:{})",
+                jump_name, server.name, server.host, server.port
+            )
+        }
+        None => format!("直连 {} ({}:{})", server.name, server.host, server.port),
+    }
+}
+
+pub fn describe_connection(conn: &SshConnection) -> String {
+    match &conn.jump_server {
+        Some(jump) => format!(
+            "经跳板机 {} ({}) → {} ({}:{})",
+            jump.name, jump.host, conn.server.name, conn.server.host, conn.server.port
+        ),
+        None => format!(
+            "直连 {} ({}:{})",
+            conn.server.name, conn.server.host, conn.server.port
+        ),
     }
 }
 
@@ -187,7 +225,7 @@ async fn connect_inner(config: &AppConfig, server_id: &str, depth: u8) -> Result
         host_key_id: format!("{}:{}", server.host, server.port),
     };
 
-    let (mut handle, parents) = match &server.jump_server_id {
+    let (mut handle, parents, jump_server) = match &server.jump_server_id {
         None => {
             let stream = match connect_tcp_nodelay(&server.host, server.port).await {
                 Ok(stream) => stream,
@@ -201,10 +239,11 @@ async fn connect_inner(config: &AppConfig, server_id: &str, depth: u8) -> Result
                     bail!("{}", explain_connect_error(&anyhow!("{}", error), &server));
                 }
             };
-            (handle, Vec::new())
+            (handle, Vec::new(), None)
         }
         Some(jump_id) => {
             let jump_conn = Box::pin(connect_inner(config, jump_id, depth + 1)).await?;
+            let jump_server = jump_conn.server.clone();
             let channel = jump_conn
                 .handle
                 .channel_open_direct_tcpip(&server.host, server.port as u32, "127.0.0.1", 0)
@@ -231,7 +270,7 @@ async fn connect_inner(config: &AppConfig, server_id: &str, depth: u8) -> Result
             // 展开跳板链，全部保活
             let mut parents = jump_conn._parents;
             parents.push(jump_conn.handle);
-            (handle, parents)
+            (handle, parents, Some(jump_server))
         }
     };
 
@@ -241,6 +280,7 @@ async fn connect_inner(config: &AppConfig, server_id: &str, depth: u8) -> Result
         handle,
         server,
         _parents: parents,
+        jump_server,
     })
 }
 
@@ -299,9 +339,17 @@ fn decode_output(bytes: &[u8]) -> String {
 pub async fn exec(
     conn: &SshConnection,
     command: &str,
+    on_line: Option<&mut (dyn FnMut(&str) + Send)>,
+) -> Result<ExecOutput> {
+    exec_on(&conn.handle, command, on_line).await
+}
+
+pub async fn exec_on(
+    handle: &Handle<SshHandler>,
+    command: &str,
     mut on_line: Option<&mut (dyn FnMut(&str) + Send)>,
 ) -> Result<ExecOutput> {
-    let mut channel = conn.handle.channel_open_session().await?;
+    let mut channel = handle.channel_open_session().await?;
     channel.exec(true, command).await?;
 
     let mut stdout: Vec<u8> = Vec::new();
@@ -400,7 +448,7 @@ pub async fn probe_os(conn: &SshConnection) -> Result<(Option<String>, String)> 
     Ok((detected, combined))
 }
 
-/// Windows OpenSSH 对接近 256KB 的 FXP_WRITE 和并发写入不稳定，用串行 32KB
+/// Windows OpenSSH 单包过大不稳定；经跳板时机密逐包确认，所以允许流水线并发写入
 pub const SFTP_WRITE_CHUNK: usize = 32 * 1024;
 const SFTP_WRITE_CHUNK_LINUX: usize = 128 * 1024;
 
@@ -412,18 +460,28 @@ pub fn sftp_write_chunk(os: OsType) -> usize {
     }
 }
 
+fn sftp_concurrent_writes(os: OsType) -> usize {
+    match os {
+        OsType::Windows => 4,
+        OsType::Linux => 4,
+    }
+}
+
 /// 打开 SFTP 会话
 pub async fn open_sftp(conn: &SshConnection) -> Result<russh_sftp::client::SftpSession> {
-    let channel = conn.handle.channel_open_session().await?;
+    open_sftp_handle(&conn.handle, conn.server.os).await
+}
+
+pub async fn open_sftp_handle(
+    handle: &Handle<SshHandler>,
+    os: OsType,
+) -> Result<russh_sftp::client::SftpSession> {
+    let channel = handle.channel_open_session().await?;
     channel.request_subsystem(true, "sftp").await?;
-    let chunk = sftp_write_chunk(conn.server.os) as u32;
-    let concurrent_writes = match conn.server.os {
-        OsType::Windows => 1,
-        OsType::Linux => 4,
-    };
+    let chunk = sftp_write_chunk(os) as u32;
     let sftp_config = russh_sftp::client::Config {
         max_packet_len: chunk,
-        max_concurrent_writes: concurrent_writes,
+        max_concurrent_writes: sftp_concurrent_writes(os),
         request_timeout_secs: 120,
     };
     let sftp = russh_sftp::client::SftpSession::new_with_config(channel.into_stream(), sftp_config)
@@ -466,6 +524,159 @@ pub async fn sftp_mkdir_all(sftp: &russh_sftp::client::SftpSession, path: &str) 
                 return Err(anyhow!("创建远端目录 {} 失败: {}", current, error));
             }
         }
+    }
+    Ok(())
+}
+
+fn sh_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn windows_sftp_abs(path: &str) -> String {
+    let normalized = to_sftp_path(path);
+    if normalized.starts_with('/') {
+        normalized
+    } else {
+        format!("/{}", normalized)
+    }
+}
+
+async fn sftp_write_all(
+    sftp: &russh_sftp::client::SftpSession,
+    remote_path: &str,
+    bytes: &[u8],
+) -> Result<()> {
+    let mut remote = sftp
+        .create(remote_path.to_string())
+        .await
+        .with_context(|| format!("在跳板机创建文件失败: {}", remote_path))?;
+    remote.write_all(bytes).await?;
+    remote.flush().await?;
+    remote.shutdown().await?;
+    Ok(())
+}
+
+/// 先把文件 SFTP 到 Linux 跳板机（公网走 Linux 大包），再由跳板机内网 scp/sftp 到 Windows
+pub async fn upload_through_jump(
+    conn: &SshConnection,
+    local_path: &Path,
+    windows_remote_path: &str,
+    mut on_progress: impl FnMut(u64, u64),
+) -> Result<()> {
+    let jump_handle = conn
+        .nearest_jump_handle()
+        .context("没有跳板机会话，无法中转上传")?;
+    let jump_server = conn
+        .jump_server
+        .as_ref()
+        .context("没有跳板机配置，无法中转上传")?;
+    if jump_server.os != OsType::Linux {
+        bail!("跳板机 {} 不是 Linux，无法用内网拷贝中转", jump_server.name);
+    }
+    let AuthConfig::Password { password } = &conn.server.auth else {
+        bail!("经跳板机中转需要目标 Windows 使用密码认证");
+    };
+
+    let stamp = uuid::Uuid::new_v4().to_string();
+    let work_dir = format!("/tmp/shhd-deploy-{}", stamp);
+    let payload_path = format!("{}/payload.bin", work_dir);
+    let askpass_path = format!("{}/askpass.sh", work_dir);
+    let batch_path = format!("{}/batch.txt", work_dir);
+    let run_path = format!("{}/run.sh", work_dir);
+    let dest_abs = windows_sftp_abs(windows_remote_path);
+    let user_host = format!("{}@{}", conn.server.username, conn.server.host);
+
+    let win_path = to_sftp_path(windows_remote_path);
+    let win_sftp = open_sftp(conn).await?;
+    if let Some(slash) = win_path.rfind('/') {
+        if slash > 0 { sftp_mkdir_all(&win_sftp, &win_path[..slash]).await?; }
+    }
+    drop(win_sftp);
+
+    let sftp = open_sftp_handle(jump_handle, OsType::Linux).await?;
+    sftp_mkdir_all(&sftp, &work_dir).await?;
+
+    let mut local_file = tokio::fs::File::open(local_path)
+        .await
+        .with_context(|| format!("打开本地文件失败: {}", local_path.display()))?;
+    let total = local_file.metadata().await?.len();
+    let mut remote = sftp
+        .create(payload_path.clone())
+        .await
+        .with_context(|| format!("在跳板机创建中转文件失败: {}", payload_path))?;
+    let chunk_size = sftp_write_chunk(OsType::Linux);
+    let mut buffer = vec![0u8; chunk_size];
+    let mut sent = 0u64;
+    loop {
+        let read = local_file.read(&mut buffer).await?;
+        if read == 0 { break; }
+        remote.write_all(&buffer[..read]).await?;
+        sent += read as u64;
+        on_progress(sent, total);
+    }
+    remote.flush().await?;
+    remote.shutdown().await?;
+
+    let askpass = format!(
+        "#!/bin/sh\nprintf '%s\\n' {}\n",
+        sh_single_quote(password)
+    );
+    let batch = format!("put {} {}\n", payload_path, dest_abs);
+    let run_script = format!(
+        r#"#!/bin/sh
+set -e
+SRC={src}
+ASKPASS={askpass}
+BATCH={batch}
+USERHOST={user_host}
+REMOTE={remote}
+if command -v scp >/dev/null 2>&1; then
+  if scp -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$SRC" "$USERHOST:$REMOTE"; then
+    exit 0
+  fi
+fi
+if ! command -v sftp >/dev/null 2>&1; then
+  echo "跳板机缺少 scp/sftp，无法内网拷贝到 Windows" >&2
+  exit 1
+fi
+export DISPLAY="${{DISPLAY:-:0}}"
+export SSH_ASKPASS="$ASKPASS"
+export SSH_ASKPASS_REQUIRE=force
+sftp -oPreferredAuthentications=password -oPubkeyAuthentication=no \
+  -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null \
+  -b "$BATCH" "$USERHOST" </dev/null
+"#,
+        src = sh_single_quote(&payload_path),
+        askpass = sh_single_quote(&askpass_path),
+        batch = sh_single_quote(&batch_path),
+        user_host = sh_single_quote(&user_host),
+        remote = sh_single_quote(&dest_abs),
+    );
+    sftp_write_all(&sftp, &askpass_path, askpass.as_bytes()).await?;
+    sftp_write_all(&sftp, &batch_path, batch.as_bytes()).await?;
+    sftp_write_all(&sftp, &run_path, run_script.as_bytes()).await?;
+    drop(sftp);
+
+    let copy_cmd = format!(
+        "chmod 700 {} {} && sh {}",
+        sh_single_quote(&askpass_path),
+        sh_single_quote(&run_path),
+        sh_single_quote(&run_path)
+    );
+    let output = exec_on(jump_handle, &copy_cmd, None).await;
+    let _ = exec_on(
+        jump_handle,
+        &format!("rm -rf {}", sh_single_quote(&work_dir)),
+        None,
+    )
+    .await;
+    let output = output?;
+    if !output.success() {
+        bail!(
+            "跳板机内网拷贝到 Windows 失败(退出码 {}): {}",
+            output.exit_code,
+            output.combined().chars().take(1500).collect::<String>()
+        );
     }
     Ok(())
 }

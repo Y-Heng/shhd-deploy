@@ -224,6 +224,51 @@ async fn upload_file(
     let started = Instant::now();
     let mut last_error = None;
 
+    logger.info(format!(
+        "上传路径: {}，大小 {:.2} MB",
+        ssh::describe_connection(conn),
+        total_bytes as f64 / 1024.0 / 1024.0
+    ));
+
+    if conn.jump_server.is_some() {
+        logger.info(format!(
+            "先传到跳板机，再内网拷到 {}（不走 Windows SFTP 公网逐包确认）",
+            conn.server.name
+        ));
+        let mut last_report = Instant::now();
+        match ssh::upload_through_jump(conn, local_path, remote_path, |sent, total| {
+            if last_report.elapsed().as_millis() > 500 {
+                let fraction = sent as f64 / total.max(1) as f64;
+                let speed = sent as f64 / 1024.0 / 1024.0 / started.elapsed().as_secs_f64().max(0.001);
+                logger.progress(
+                    progress_base + progress_span * fraction,
+                    format!("{} {:.1}% ({:.2} MB/s)", step_name, fraction * 100.0, speed),
+                );
+                last_report = Instant::now();
+            }
+        })
+        .await
+        {
+            Ok(()) => {
+                let elapsed = started.elapsed().as_secs_f64();
+                logger.info(format!(
+                    "上传完成: {:.2} MB，耗时 {:.1} 秒（{:.2} MB/s）",
+                    total_bytes as f64 / 1024.0 / 1024.0,
+                    elapsed,
+                    total_bytes as f64 / 1024.0 / 1024.0 / elapsed.max(0.001)
+                ));
+                return Ok(());
+            }
+            Err(error) => {
+                logger.warn(format!("跳板机中转失败，改走 Windows SFTP: {:#}", error));
+                local_file
+                    .seek(std::io::SeekFrom::Start(0))
+                    .await
+                    .context("回退直传前重置本地文件指针失败")?;
+            }
+        }
+    }
+
     for attempt in 0..2 {
         if attempt > 0 {
             logger.info(format!(
@@ -780,8 +825,9 @@ pub async fn run_backend_deploy(
 
     // 第 3 步：连接首台服务器并上传中转
     logger.progress(10.0, format!("连接服务器 {}", first_server.name));
+    logger.info(ssh::describe_route(&config, &first_server));
     let first_conn = ssh::connect(&config, &first_server.id).await?;
-    logger.success(format!("已连接 {}", first_server.name));
+    logger.success(format!("已连接 {}（{}）", first_server.name, ssh::describe_connection(&first_conn)));
 
     let staging_release = win_join(&group.staging_dir, &release_name);
     let cleanup_script = format!(
