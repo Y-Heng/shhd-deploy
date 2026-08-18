@@ -304,16 +304,27 @@ function setLocalSelection(rows: LocalDirEntry[], anchorPath?: string) {
   else if (rows.length === 1) localAnchorPath.value = rows[0].path
 }
 
+function isAbsoluteRemotePath(path: string) {
+  const trimmed = path.trim()
+  if (!trimmed) return false
+  if (trimmed.startsWith('/') || trimmed === '~' || trimmed.startsWith('~/')) return true
+  return /^[A-Za-z]:[\\/]?/.test(trimmed)
+}
+
 async function loadRemoteDir(path: string) {
   if (props.active === false) return
   if (!props.serverId) {
     ElMessage.warning('请先选择服务器')
     return
   }
+  const target = (path || '/').trim() || '/'
+  if (!isAbsoluteRemotePath(target)) {
+    ElMessage.error(`远端路径无效: ${target}`)
+    return
+  }
   remoteLoading.value = true
   clearRemoteSelection()
   try {
-    const target = path || '/'
     remoteEntries.value = await api.sftpList(props.serverId, target)
     setRemotePath(target)
     remoteReady.value = true
@@ -1455,7 +1466,10 @@ function onGlobalClick() {
 
 defineExpose({
   getCurrentPath: () => remotePath.value,
-  openPath: (path: string) => loadRemoteDir(path)
+  openPath: (path: string) => {
+    if (!isAbsoluteRemotePath(path)) return
+    loadRemoteDir(path)
+  }
 })
 
 watch(

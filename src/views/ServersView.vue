@@ -499,7 +499,6 @@ function isDropHint(groupName: string, serverId: string | undefined, place: stri
           </button>
           <div class="host-actions" :class="{ show: hoveredServerId === server.id }">
             <el-button
-              size="small"
               type="success"
               :loading="sshConnectingId === server.id"
               :disabled="Boolean(sshConnectingId)"
@@ -509,7 +508,6 @@ function isDropHint(groupName: string, serverId: string | undefined, place: stri
             </el-button>
             <el-button
               v-if="isWindowsServer(server)"
-              size="small"
               type="primary"
               plain
               :loading="rdpLoadingId === server.id"
@@ -518,10 +516,8 @@ function isDropHint(groupName: string, serverId: string | undefined, place: stri
             >
               远程桌面
             </el-button>
-            <el-button size="small" @click.stop="openEditDialog(server)">编辑</el-button>
-            <el-button size="small" type="danger" plain @click.stop="removeServer(server)">
-              删除
-            </el-button>
+            <el-button @click.stop="openEditDialog(server)">编辑</el-button>
+            <el-button type="danger" plain @click.stop="removeServer(server)">删除</el-button>
           </div>
           <span
             class="drag-grip"
@@ -833,19 +829,20 @@ function isDropHint(groupName: string, serverId: string | undefined, place: stri
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 6px;
+  gap: 8px;
   flex-shrink: 0;
-  width: 300px;
-  height: 32px;
+  min-width: 360px;
+  height: 40px;
   margin-left: auto;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.12s;
 }
 .host-actions :deep(.el-button) {
-  height: 28px;
-  padding: 5px 10px;
+  height: 34px;
+  padding: 8px 14px;
   margin: 0;
+  font-size: 14px;
 }
 .host-actions.show {
   opacity: 1;

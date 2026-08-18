@@ -388,16 +388,13 @@ function isDropHint(groupName: string, itemId: string | undefined, place: string
               <div class="docker-actions">
                 <el-button
                   type="primary"
-                  size="small"
                   :disabled="task.running.value"
                   @click="runTarget(target)"
                 >
                   执行
                 </el-button>
-                <el-button size="small" text @click="openEditDialog(target)">编辑</el-button>
-                <el-button size="small" text type="danger" @click="removeTarget(target)">
-                  删除
-                </el-button>
+                <el-button @click="openEditDialog(target)">编辑</el-button>
+                <el-button type="danger" plain @click="removeTarget(target)">删除</el-button>
               </div>
             </el-card>
             </div>
@@ -598,6 +595,15 @@ function isDropHint(groupName: string, itemId: string | undefined, place: string
   line-height: 1.8;
 }
 .docker-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin-top: 10px;
+}
+.docker-actions :deep(.el-button) {
+  height: 34px;
+  padding: 8px 14px;
+  margin: 0;
+  font-size: 14px;
 }
 </style>

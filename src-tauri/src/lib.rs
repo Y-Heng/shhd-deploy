@@ -681,13 +681,29 @@ fn launch_rdp_client(
     Err("当前系统暂不支持一键远程桌面".into())
 }
 
-/// mstsc 进程退出后通知前端；启动器若立刻退出则忽略（会话仍可能在）
-fn watch_rdp_process(app: AppHandle, server_id: String, mut child: std::process::Child) {
+/// 盯住本次远程桌面窗口（多开时后续 mstsc 可能立刻退出，不能只 wait Child）
+fn watch_rdp_process(
+    app: AppHandle,
+    server_id: String,
+    mut child: std::process::Child,
+    address: String,
+    server_name: String,
+) {
     std::thread::spawn(move || {
-        let started = std::time::Instant::now();
-        let _ = child.wait();
-        if started.elapsed() < std::time::Duration::from_secs(2) { return; }
-        let _ = app.emit("rdp-closed", server_id);
+        #[cfg(target_os = "windows")]
+        {
+            rdp_title::watch_session(&address, &server_name, &mut child);
+            let _ = app.emit("rdp-closed", server_id);
+            return;
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (address, server_name);
+            let started = std::time::Instant::now();
+            let _ = child.wait();
+            if started.elapsed() < std::time::Duration::from_secs(2) { return; }
+            let _ = app.emit("rdp-closed", server_id);
+        }
     });
 }
 
@@ -712,8 +728,7 @@ async fn open_rdp(
     let Some(_jump_id) = server.jump_server_id.clone() else {
         let address = format!("{}:3389", server.host);
         let child = launch_rdp_client(&address, width, height, fullscreen)?;
-        remember_rdp_window_title(&address, &server.name);
-        watch_rdp_process(app.clone(), server_id.clone(), child);
+        watch_rdp_process(app.clone(), server_id.clone(), child, address.clone(), server.name.clone());
         return Ok(address);
     };
 
@@ -748,17 +763,8 @@ async fn open_rdp(
 
     let address = format!("127.0.0.1:{}", local_port);
     let child = launch_rdp_client(&address, width, height, fullscreen)?;
-    remember_rdp_window_title(&address, &server.name);
-    watch_rdp_process(app, server_id, child);
+    watch_rdp_process(app, server_id, child, address.clone(), server.name.clone());
     Ok(address)
-}
-
-/// Windows 下把 mstsc 标题「远程桌面连接」换成 SSH 服务器名称
-fn remember_rdp_window_title(address: &str, server_name: &str) {
-    #[cfg(target_os = "windows")]
-    rdp_title::watch_and_set_title(address.to_string(), server_name.to_string());
-    #[cfg(not(target_os = "windows"))]
-    let _ = (address, server_name);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

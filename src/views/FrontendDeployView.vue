@@ -307,10 +307,9 @@ async function startRollback(record: FrontendReleaseRecord) {
                 </el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="200" fixed="right">
+            <el-table-column label="操作" width="260" fixed="right">
               <template #default="{ row }">
                 <el-button
-                  size="small"
                   type="primary"
                   plain
                   :disabled="task.running.value"
@@ -318,10 +317,8 @@ async function startRollback(record: FrontendReleaseRecord) {
                 >
                   部署
                 </el-button>
-                <el-button size="small" @click="openEditDialog(row)">编辑</el-button>
-                <el-button size="small" type="danger" text @click="removeTarget(row)">
-                  删除
-                </el-button>
+                <el-button @click="openEditDialog(row)">编辑</el-button>
+                <el-button type="danger" plain @click="removeTarget(row)">删除</el-button>
               </template>
             </el-table-column>
           </el-table>

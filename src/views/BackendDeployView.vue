@@ -664,12 +664,10 @@ async function removeProject(project: BackendProject) {
               min-width="200"
               show-overflow-tooltip
             />
-            <el-table-column label="操作" width="140" fixed="right">
+            <el-table-column label="操作" width="180" fixed="right">
               <template #default="{ row }">
-                <el-button size="small" @click="openEditProject(row)">编辑</el-button>
-                <el-button size="small" type="danger" text @click="removeProject(row)">
-                  删除
-                </el-button>
+                <el-button @click="openEditProject(row)">编辑</el-button>
+                <el-button type="danger" plain @click="removeProject(row)">删除</el-button>
               </template>
             </el-table-column>
           </el-table>

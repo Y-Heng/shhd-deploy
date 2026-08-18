@@ -553,7 +553,11 @@ function openSftpPanel() {
   session.panelMode = 'sftp'
   nextTick(() => {
     const cwd = inferSshCwd()
-    if (cwd) activeSftpPanel()?.openPath?.(cwd)
+    if (!cwd) return
+    const panel = activeSftpPanel()
+    if (!panel) return
+    if (normalizeRemotePath(panel.getCurrentPath()) === normalizeRemotePath(cwd)) return
+    panel.openPath?.(cwd)
   })
 }
 
@@ -583,6 +587,20 @@ function expandShellHome(path: string, username: string): string {
   return path
 }
 
+/** 仅接受绝对路径；提示符 \W 往往只有末级目录名（如 nginx），不能当 SFTP 路径 */
+function isAbsoluteRemotePath(path: string) {
+  const trimmed = path.trim()
+  if (!trimmed) return false
+  if (trimmed.startsWith('/') || trimmed === '~' || trimmed.startsWith('~/')) return true
+  return /^[A-Za-z]:[\\/]?/.test(trimmed)
+}
+
+function normalizeRemotePath(path: string) {
+  const trimmed = path.trim().replace(/\\/g, '/')
+  if (!trimmed || trimmed === '/') return '/'
+  return trimmed.replace(/\/+$/, '')
+}
+
 /** 从 xterm 缓冲区倒序推断当前 SSH 工作目录 */
 function inferSshCwd(): string | null {
   const session = getActiveSession()
@@ -603,7 +621,8 @@ function inferSshCwd(): string | null {
     if (bracketMatch) {
       const username = bracketMatch[1]
       const rawPath = bracketMatch[2].trim()
-      if (rawPath) return expandShellHome(rawPath, username)
+      const absolutePath = expandShellHome(rawPath, username)
+      if (isAbsoluteRemotePath(absolutePath)) return absolutePath
     }
 
     // Linux: user@host:/path$ 或 user@host:~$
@@ -611,7 +630,8 @@ function inferSshCwd(): string | null {
     if (colonMatch) {
       const username = colonMatch[1]
       const rawPath = colonMatch[2].trim()
-      if (rawPath) return expandShellHome(rawPath, username)
+      const absolutePath = expandShellHome(rawPath, username)
+      if (isAbsoluteRemotePath(absolutePath)) return absolutePath
     }
 
     // Windows PowerShell: PS C:\foo>

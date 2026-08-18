@@ -255,6 +255,30 @@ async function removeTunnel(tunnel: TunnelConfig) {
   ElMessage.success("已删除");
 }
 
+function nextFreeLocalPort(preferred: number) {
+  const usedPorts = new Set((config.value?.tunnels ?? []).map((item) => item.localPort));
+  let port = preferred;
+  while (usedPorts.has(port) && port < 65535) port += 1;
+  if (!usedPorts.has(port)) return port;
+  port = 10000;
+  while (usedPorts.has(port) && port < 65535) port += 1;
+  return port;
+}
+
+async function duplicateTunnel(tunnel: TunnelConfig) {
+  if (!config.value) return;
+  const clone: TunnelConfig = JSON.parse(JSON.stringify(tunnel));
+  clone.id = `tunnel-${Date.now()}`;
+  clone.name = `${tunnel.name} 副本`;
+  clone.localPort = nextFreeLocalPort(tunnel.localPort + 1);
+  clone.autoStart = false;
+  const index = config.value.tunnels.findIndex((item) => item.id === tunnel.id);
+  if (index >= 0) config.value.tunnels.splice(index + 1, 0, clone);
+  else config.value.tunnels.push(clone);
+  await api.saveConfig(config.value);
+  ElMessage.success(`已复制为「${clone.name}」`);
+}
+
 async function persistTunnels(next: TunnelConfig[]) {
   if (!config.value) return;
   config.value.tunnels = next;
@@ -445,7 +469,6 @@ function isDropHint(groupName: string, itemId: string | undefined, place: string
           </div>
           <div class="tunnel-actions">
             <el-button
-              size="small"
               :type="isRunning(tunnel.id) ? 'warning' : 'success'"
               plain
               :loading="tunnelBusyId === tunnel.id"
@@ -454,17 +477,9 @@ function isDropHint(groupName: string, itemId: string | undefined, place: string
             >
               {{ isRunning(tunnel.id) ? "停止" : "启动" }}
             </el-button>
-            <el-button size="small" @click.stop="openEditDialog(tunnel)">
-              编辑
-            </el-button>
-            <el-button
-              size="small"
-              type="danger"
-              plain
-              @click.stop="removeTunnel(tunnel)"
-            >
-              删除
-            </el-button>
+            <el-button @click.stop="duplicateTunnel(tunnel)">复制</el-button>
+            <el-button @click.stop="openEditDialog(tunnel)">编辑</el-button>
+            <el-button type="danger" plain @click.stop="removeTunnel(tunnel)">删除</el-button>
           </div>
           <span
             class="drag-grip"
@@ -725,12 +740,19 @@ function isDropHint(groupName: string, itemId: string | undefined, place: string
 }
 .tunnel-actions {
   display: flex;
-  gap: 6px;
+  align-items: center;
+  gap: 8px;
   flex-shrink: 0;
   margin-left: auto;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.12s;
+}
+.tunnel-actions :deep(.el-button) {
+  height: 34px;
+  padding: 8px 14px;
+  margin: 0;
+  font-size: 14px;
 }
 .tunnel-row:hover .tunnel-actions {
   opacity: 1;
