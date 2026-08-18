@@ -39,7 +39,7 @@ pub fn is_enabled() -> bool {
 
 /// 追加一行诊断日志（仅 enabled 时落盘）
 pub fn append_log(line: &str) {
-    if !LOG_ENABLED.load(Ordering::Relaxed) {
+    if !is_enabled() {
         return;
     }
     let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
