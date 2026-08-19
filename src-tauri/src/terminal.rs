@@ -2,12 +2,43 @@ use crate::config::{AppConfig, OsType};
 use crate::ssh;
 use anyhow::{Context, Result};
 use base64::Engine;
-use russh::ChannelMsg;
+use russh::{ChannelMsg, Pty};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::{mpsc, Mutex};
+
+/// 交互式 PTY 终端模式。OCRNL 必须为 0，否则 PowerShell 用 CR 重绘提示符时会变成换行。
+/// Windows ConPTY 本身已输出 CRLF，ONLCR 再开会空一行。
+fn interactive_pty_modes(windows: bool) -> Vec<(Pty, u32)> {
+    let onlcr = if windows { 0 } else { 1 };
+    vec![
+        (Pty::VINTR, 3),
+        (Pty::VQUIT, 28),
+        (Pty::VERASE, 127),
+        (Pty::VKILL, 21),
+        (Pty::VEOF, 4),
+        (Pty::ICRNL, 1),
+        (Pty::IGNCR, 0),
+        (Pty::INLCR, 0),
+        (Pty::ISIG, 1),
+        (Pty::ICANON, 1),
+        (Pty::ECHO, 1),
+        (Pty::ECHOE, 1),
+        (Pty::ECHOK, 1),
+        (Pty::ECHONL, 0),
+        (Pty::OPOST, 1),
+        (Pty::ONLCR, onlcr),
+        (Pty::OCRNL, 0),
+        (Pty::ONOCR, 0),
+        (Pty::ONLRET, 0),
+        (Pty::CS8, 1),
+        (Pty::IUTF8, 1),
+        (Pty::TTY_OP_ISPEED, 38400),
+        (Pty::TTY_OP_OSPEED, 38400),
+    ]
+}
 
 /// 发送给终端会话任务的控制命令
 enum TermCommand {
@@ -59,13 +90,24 @@ impl TerminalManager {
         ));
         let channel = conn.handle.channel_open_session().await?;
         channel
-            .request_pty(true, "xterm-256color", cols.max(20), rows.max(5), 0, 0, &[])
+            .request_pty(
+                true,
+                "xterm-256color",
+                cols.max(20),
+                rows.max(5),
+                0,
+                0,
+                &interactive_pty_modes(conn.server.os == OsType::Windows),
+            )
             .await
             .context("申请 PTY 失败")?;
         channel.request_shell(true).await.context("启动 shell 失败")?;
 
-        // Windows OpenSSH 交互必须走 login shell（exec 配 ConPTY 会空白）；默认再切到 PowerShell
-        if conn.server.os == OsType::Windows { let _ = channel.data(&b"chcp 65001 >nul & powershell -NoLogo\r\n"[..]).await; }
+        // Windows 必须走 login shell（exec 配 ConPTY 会空白）。
+        // 不要 chcp 65001 / 改 OutputEncoding：会让 PS 5.1 多打空行、光标错乱。
+        if conn.server.os == OsType::Windows {
+            let _ = channel.data(&b"powershell -NoLogo -NoProfile -NoExit -Command \"Remove-Module PSReadLine -ErrorAction SilentlyContinue\"\r\n"[..]).await;
+        }
         crate::logger::append_log(&format!(
             "terminal 会话就绪 [{}] {} ms",
             server_id,

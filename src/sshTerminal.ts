@@ -5,6 +5,8 @@ export function createSshTerminal() {
   const terminal = new Terminal({
     fontFamily: "Cascadia Code, Consolas, Menlo, Monaco, monospace",
     fontSize: 14,
+    lineHeight: 1,
+    convertEol: false,
     cursorBlink: false,
     cursorStyle: "block",
     scrollback: 5000,

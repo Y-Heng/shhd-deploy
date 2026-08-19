@@ -62,7 +62,7 @@ onMounted(async () => {
       <el-collapse-item title="四、SSH 终端 / SFTP / 远程桌面" name="terminal">
         <div class="help-body">
           <ul>
-            <li><b>SSH 终端</b>：选服务器 → 新建会话，支持多标签。连 Windows 服务器默认进 PowerShell；若要 cmd，输入 <code>cmd</code> 回车即可。</li>
+            <li><b>SSH 终端</b>：选服务器 → 新建会话，支持多标签。连 Windows 服务器默认进 PowerShell（已关闭 PSReadLine，避免经跳板机输入闪烁、换盘后逐字换行）。若要 cmd，输入 <code>cmd</code> 回车即可。</li>
             <li><b>SFTP 文件管理</b>：双栏浏览本地与远端；支持拖拽上传/下载；右键菜单可新建、重命名、删除、下载等。</li>
             <li><b>路径同步</b>：SSH 终端里 <code>cd</code> 切换目录后，同一会话的 SFTP 远端路径会跟着更新；在 SFTP 进入目录也会尽量与终端工作目录对齐。</li>
             <li><b>远程桌面</b>：在「服务器」页 Windows 行点「远程桌面」。分辨率在编辑服务器时设置，连接时直接使用；经跳板机建隧道并拉起 mstsc。你只需在 mstsc 窗口输入 Windows 账号密码。</li>

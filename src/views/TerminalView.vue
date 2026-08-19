@@ -308,12 +308,16 @@ async function openSessionForServer(serverId: string) {
   terminal.write(`\x1b[32m正在连接 ${server.name}（${server.host}:${server.port}）…\x1b[0m\r\n`)
 
   try {
-    const sessionId = await api.terminalOpen(server.id, 120, 30)
+    fitAddon.fit()
+    const cols = Math.max(terminal.cols, 20)
+    const rows = Math.max(terminal.rows, 5)
+    const sessionId = await api.terminalOpen(server.id, cols, rows)
     session.sessionId = sessionId
     session.connecting = false
     syncSessionFlags()
     await nextTick()
     fitAddon.fit()
+    await api.terminalResize(sessionId, terminal.cols, terminal.rows)
     terminal.focus()
   } catch (error) {
     ElMessage.error(String(error))
@@ -1345,6 +1349,12 @@ onUnmounted(() => {
 .terminal-container :deep(.xterm) {
   height: 100%;
   padding: 0;
+  line-height: 1;
+}
+
+.terminal-container :deep(.xterm-rows),
+.terminal-container :deep(.xterm-rows span) {
+  line-height: 1;
 }
 
 .terminal-container :deep(.xterm-viewport) {
