@@ -29,7 +29,7 @@ const activeTab = ref("deploy");
 const selectedGroupId = ref("");
 const selectedProjectIds = ref<string[]>([]);
 const featureName = ref("");
-const copyMode = ref<CopyMode>("smb");
+const copyMode = ref<CopyMode>("upload");
 const deployMode = ref<DeployMode>("full");
 const backupSibling = ref(true);
 const stagedReleaseName = ref("");
@@ -278,7 +278,7 @@ async function addGroup() {
     secondaryServerId: null,
     stagingDir: "D:\\code\\sites\\devlop",
     backupDir: "D:\\code\\sites\\backup",
-    copyMode: "smb",
+    copyMode: "upload",
     projects: [],
   };
   config.value.backendGroups.push(newGroup);
@@ -499,8 +499,8 @@ async function removeProject(project: BackendProject) {
 
           <el-form-item v-if="deployMode !== 'replace'" label="备机同步方式">
             <el-radio-group v-model="copyMode">
-              <el-radio value="smb">内网 SMB 复制（推荐，只上传一次）</el-radio>
-              <el-radio value="upload">分别上传</el-radio>
+              <el-radio value="upload">SSH 分发 zip（推荐，不需要 D$）</el-radio>
+              <el-radio value="smb">内网 SMB 复制</el-radio>
             </el-radio-group>
           </el-form-item>
 
@@ -644,10 +644,10 @@ async function removeProject(project: BackendProject) {
             </el-form-item>
             <el-form-item label="备机同步">
               <el-radio-group v-model="selectedGroup.copyMode">
+                <el-radio value="upload">SSH 分发 zip</el-radio>
                 <el-radio value="smb">内网 SMB 复制</el-radio>
-                <el-radio value="upload">分别上传</el-radio>
               </el-radio-group>
-              <span class="form-hint">SMB 要求主服务器能访问备机管理共享（如 D$），且账号密码与服务器配置一致</span>
+              <span class="form-hint">SSH 分发只传压缩包，走跳板机内网拷到各 Windows，无需配置 D$。SMB 才需要管理共享。</span>
             </el-form-item>
             <el-form-item>
               <el-button type="primary" @click="persistConfig">保存组配置</el-button>

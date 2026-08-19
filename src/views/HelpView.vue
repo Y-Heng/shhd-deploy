@@ -62,7 +62,7 @@ onMounted(async () => {
       <el-collapse-item title="四、SSH 终端 / SFTP / 远程桌面" name="terminal">
         <div class="help-body">
           <ul>
-            <li><b>SSH 终端</b>：选服务器 → 新建会话，支持多标签。连 Windows 服务器默认进 cmd，输入 <code>powershell</code> 回车可切换。</li>
+            <li><b>SSH 终端</b>：选服务器 → 新建会话，支持多标签。连 Windows 服务器默认进 PowerShell；若要 cmd，输入 <code>cmd</code> 回车即可。</li>
             <li><b>SFTP 文件管理</b>：双栏浏览本地与远端；支持拖拽上传/下载；右键菜单可新建、重命名、删除、下载等。</li>
             <li><b>路径同步</b>：SSH 终端里 <code>cd</code> 切换目录后，同一会话的 SFTP 远端路径会跟着更新；在 SFTP 进入目录也会尽量与终端工作目录对齐。</li>
             <li><b>远程桌面</b>：在「服务器」页 Windows 行点「远程桌面」。分辨率在编辑服务器时设置，连接时直接使用；经跳板机建隧道并拉起 mstsc。你只需在 mstsc 窗口输入 Windows 账号密码。</li>
@@ -86,6 +86,7 @@ onMounted(async () => {
             <li>替换/回滚可自定义停止、启动脚本。默认提供 <b>IIS</b>（只停物理路径匹配到的站点或程序池，不停整个 IIS）和 <b>Java</b>（只停对应 Windows 服务）两套方案，可在项目配置里改。</li>
             <li>出问题到「发布历史」点<b>回滚</b>，一键恢复替换前的 bin。回滚成功后原记录会标成「已回滚」，并新增一条「回滚完成」记录。</li>
           </ul>
+          <p><b>备机同步（推荐 SSH 分发 zip）</b>：zip 只经公网上传到跳板机一次，再内网拷到组内各 Windows 解压，不需要配置 <code>D$</code>。SMB 是把已解压的整棵目录从主服务器 robocopy 到备机，小文件多时往往更慢，还要开管理共享。</p>
           <p><b>推荐节奏</b>：本地发布产物 → 「仅上传到中转」→ 通知相关人 → 低峰「执行替换」→ 验证 → 有问题立即回滚。</p>
         </div>
       </el-collapse-item>
@@ -134,12 +135,12 @@ onMounted(async () => {
           <ul>
             <li><b>连不上 Windows 服务器</b>：确认已开启 OpenSSH Server，且端口填的是 <b>22</b>（不是 RDP 的 3389）。管理员 PowerShell：<code>Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0</code> 后 <code>Start-Service sshd</code>。</li>
             <li><b>Windows SSH 比 Linux 慢</b>：本工具已改为用 cmd 开终端、用 <code>ver</code> 探测系统，避免拉起 PowerShell/WMI。若握手本身仍要好几秒，多半是服务器 <code>sshd_config</code> 里 <code>UseDNS yes</code> 在做反向解析，改为 <code>UseDNS no</code> 后重启 sshd 即可。</li>
-            <li><b>后端部署很慢</b>：部署走的是服务器上的<b>跳板机</b>（SSH ProxyJump），不是「隧道」页那种把端口映射到本机。包会先传到 Linux 跳板机，再从跳板机内网拷到 Windows。请确认 Windows 服务器已填写跳板机；没填则会直连内网 IP，在办公网外会又慢又容易失败。</li>
+            <li><b>后端部署很慢</b>：部署走的是服务器上的<b>跳板机</b>（SSH ProxyJump），不是「隧道」页。请把负载组的「备机同步」设为「SSH 分发 zip」，zip 只上传跳板机一次再内网分发。确认每台 Windows 已填写跳板机；没填则会直连内网 IP，在办公网外会又慢又容易失败。</li>
             <li><b>提示"主机密钥指纹变化"</b>：说明服务器重装过或存在风险。确认无误后删除配置目录下 known_hosts.json 中对应记录。</li>
             <li><b>隧道端口被占用</b>：换个本地端口，或找到占用进程关掉。</li>
             <li><b>替换提示文件被占用</b>：到「项目配置」填入 IIS 或 Java 停止/启动脚本。IIS 方案只停本项目站点/程序池；Java 方案请改成实际 Windows 服务名。SSH 账号需要有管理对应服务的权限。</li>
             <li><b>健康检查一直失败</b>：到「后端部署 → 项目配置」核对健康检查地址（必须是服务器本机可访问的 localhost 地址）。</li>
-            <li><b>SMB 复制失败 / robocopy 退出码 16</b>：这是主服务器通过管理共享（如 <code>\\备机\D$</code>）把中转目录拷到备机时失败。请确认：主备内网互通；备机已开启文件共享且管理共享可用；SSH 里填的 Windows 账号密码能访问该共享。若用的是本机账号（非域账号），备机通常还要把注册表 <code>LocalAccountTokenFilterPolicy</code> 设为 1，否则管理员账号也无法访问 <code>D$</code>。临时绕过可把组的「备机同步」改成「分别上传」。</li>
+            <li><b>SMB 复制失败 / robocopy 退出码 16</b>：主服务器用管理共享（如 <code>\\备机IP\D$</code>）把中转目录拷到备机。推荐改用「SSH 分发 zip」，不需要 D$。若仍用 SMB，请在备机设 <code>LocalAccountTokenFilterPolicy=1</code> 并放行 445，再到主服务器用 <code>net use \\备机IP\D$</code> 自测。</li>
             <li><b>日期备份目录越积越多</b>：目前不自动清理，请定期手动删除服务器上的 <code>目录名-日期</code> 旧备份。</li>
             <li><b>换电脑</b>：旧电脑导出配置 → 新电脑导入，再把配置里的本地路径改成新电脑的路径。</li>
             <li><b>想改分组名</b>：在服务器 / 隧道 / Docker 部署页双击分组名称；「未分组」请通过编辑条目指定新分组。</li>

@@ -541,6 +541,11 @@ fn windows_sftp_abs(path: &str) -> String {
     }
 }
 
+pub struct JumpStagedPayload {
+    work_dir: String,
+    payload_path: String,
+}
+
 async fn sftp_write_all(
     sftp: &russh_sftp::client::SftpSession,
     remote_path: &str,
@@ -556,13 +561,12 @@ async fn sftp_write_all(
     Ok(())
 }
 
-/// 先把文件 SFTP 到 Linux 跳板机（公网走 Linux 大包），再由跳板机内网 scp/sftp 到 Windows
-pub async fn upload_through_jump(
+/// 把本地文件传到 Linux 跳板机临时目录，供后续内网分发
+pub async fn stage_on_jump(
     conn: &SshConnection,
     local_path: &Path,
-    windows_remote_path: &str,
     mut on_progress: impl FnMut(u64, u64),
-) -> Result<()> {
+) -> Result<JumpStagedPayload> {
     let jump_handle = conn
         .nearest_jump_handle()
         .context("没有跳板机会话，无法中转上传")?;
@@ -573,26 +577,10 @@ pub async fn upload_through_jump(
     if jump_server.os != OsType::Linux {
         bail!("跳板机 {} 不是 Linux，无法用内网拷贝中转", jump_server.name);
     }
-    let AuthConfig::Password { password } = &conn.server.auth else {
-        bail!("经跳板机中转需要目标 Windows 使用密码认证");
-    };
 
     let stamp = uuid::Uuid::new_v4().to_string();
     let work_dir = format!("/tmp/shhd-deploy-{}", stamp);
     let payload_path = format!("{}/payload.bin", work_dir);
-    let askpass_path = format!("{}/askpass.sh", work_dir);
-    let batch_path = format!("{}/batch.txt", work_dir);
-    let run_path = format!("{}/run.sh", work_dir);
-    let dest_abs = windows_sftp_abs(windows_remote_path);
-    let user_host = format!("{}@{}", conn.server.username, conn.server.host);
-
-    let win_path = to_sftp_path(windows_remote_path);
-    let win_sftp = open_sftp(conn).await?;
-    if let Some(slash) = win_path.rfind('/') {
-        if slash > 0 { sftp_mkdir_all(&win_sftp, &win_path[..slash]).await?; }
-    }
-    drop(win_sftp);
-
     let sftp = open_sftp_handle(jump_handle, OsType::Linux).await?;
     sftp_mkdir_all(&sftp, &work_dir).await?;
 
@@ -616,12 +604,44 @@ pub async fn upload_through_jump(
     }
     remote.flush().await?;
     remote.shutdown().await?;
+    Ok(JumpStagedPayload {
+        work_dir,
+        payload_path,
+    })
+}
 
+/// 跳板机已有的 zip 内网拷到一台 Windows
+pub async fn copy_jump_payload_to_windows(
+    jump_conn: &SshConnection,
+    staging: &JumpStagedPayload,
+    target: &SshConnection,
+    windows_remote_path: &str,
+) -> Result<()> {
+    let jump_handle = jump_conn
+        .nearest_jump_handle()
+        .context("没有跳板机会话")?;
+    let AuthConfig::Password { password } = &target.server.auth else {
+        bail!("经跳板机中转需要目标 Windows 使用密码认证");
+    };
+
+    let dest_abs = windows_sftp_abs(windows_remote_path);
+    let user_host = format!("{}@{}", target.server.username, target.server.host);
+    let win_path = to_sftp_path(windows_remote_path);
+    let win_sftp = open_sftp(target).await?;
+    if let Some(slash) = win_path.rfind('/') {
+        if slash > 0 { sftp_mkdir_all(&win_sftp, &win_path[..slash]).await?; }
+    }
+    drop(win_sftp);
+
+    let tag = uuid::Uuid::new_v4().to_string();
+    let askpass_path = format!("{}/askpass-{}.sh", staging.work_dir, tag);
+    let batch_path = format!("{}/batch-{}.txt", staging.work_dir, tag);
+    let run_path = format!("{}/run-{}.sh", staging.work_dir, tag);
     let askpass = format!(
         "#!/bin/sh\nprintf '%s\\n' {}\n",
         sh_single_quote(password)
     );
-    let batch = format!("put {} {}\n", payload_path, dest_abs);
+    let batch = format!("put {} {}\n", staging.payload_path, dest_abs);
     let run_script = format!(
         r#"#!/bin/sh
 set -e
@@ -646,12 +666,14 @@ sftp -oPreferredAuthentications=password -oPubkeyAuthentication=no \
   -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null \
   -b "$BATCH" "$USERHOST" </dev/null
 "#,
-        src = sh_single_quote(&payload_path),
+        src = sh_single_quote(&staging.payload_path),
         askpass = sh_single_quote(&askpass_path),
         batch = sh_single_quote(&batch_path),
         user_host = sh_single_quote(&user_host),
         remote = sh_single_quote(&dest_abs),
     );
+
+    let sftp = open_sftp_handle(jump_handle, OsType::Linux).await?;
     sftp_write_all(&sftp, &askpass_path, askpass.as_bytes()).await?;
     sftp_write_all(&sftp, &batch_path, batch.as_bytes()).await?;
     sftp_write_all(&sftp, &run_path, run_script.as_bytes()).await?;
@@ -663,20 +685,38 @@ sftp -oPreferredAuthentications=password -oPubkeyAuthentication=no \
         sh_single_quote(&run_path),
         sh_single_quote(&run_path)
     );
-    let output = exec_on(jump_handle, &copy_cmd, None).await;
-    let _ = exec_on(
-        jump_handle,
-        &format!("rm -rf {}", sh_single_quote(&work_dir)),
-        None,
-    )
-    .await;
-    let output = output?;
+    let output = exec_on(jump_handle, &copy_cmd, None).await?;
     if !output.success() {
         bail!(
-            "跳板机内网拷贝到 Windows 失败(退出码 {}): {}",
+            "跳板机内网拷贝到 {} 失败(退出码 {}): {}",
+            target.server.name,
             output.exit_code,
             output.combined().chars().take(1500).collect::<String>()
         );
     }
     Ok(())
+}
+
+pub async fn cleanup_jump_payload(conn: &SshConnection, staging: &JumpStagedPayload) {
+    if let Some(jump_handle) = conn.nearest_jump_handle() {
+        let _ = exec_on(
+            jump_handle,
+            &format!("rm -rf {}", sh_single_quote(&staging.work_dir)),
+            None,
+        )
+        .await;
+    }
+}
+
+/// 先把文件 SFTP 到 Linux 跳板机（公网走 Linux 大包），再由跳板机内网 scp/sftp 到 Windows
+pub async fn upload_through_jump(
+    conn: &SshConnection,
+    local_path: &Path,
+    windows_remote_path: &str,
+    on_progress: impl FnMut(u64, u64),
+) -> Result<()> {
+    let staging = stage_on_jump(conn, local_path, on_progress).await?;
+    let result = copy_jump_payload_to_windows(conn, &staging, conn, windows_remote_path).await;
+    cleanup_jump_payload(conn, &staging).await;
+    result
 }

@@ -122,9 +122,9 @@ fn default_true() -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CopyMode {
-    /// 主服务器通过内网 SMB 共享复制到备服务器（推荐，只需上传一次）
+    /// 主服务器通过内网 SMB 共享复制到备服务器（需配置 D$）
     Smb,
-    /// 分别向两台服务器上传
+    /// SSH 分发 zip：公网上传一次到跳板机，再内网拷到各 Windows
     Upload,
 }
 
@@ -174,7 +174,7 @@ impl BackendGroup {
 }
 
 fn default_copy_mode() -> CopyMode {
-    CopyMode::Smb
+    CopyMode::Upload
 }
 
 /// 前端部署目标（本地 dist 目录 -> 各服务器 nginx 目录）
@@ -597,7 +597,7 @@ fn default_template() -> AppConfig {
             secondary_server_id: None,
             staging_dir: "D:\\code\\sites\\devlop".into(),
             backup_dir: "D:\\code\\sites\\backup".into(),
-            copy_mode: CopyMode::Smb,
+            copy_mode: CopyMode::Upload,
             projects: vec![
                 BackendProject {
                     id: "brand-service-admin".into(),

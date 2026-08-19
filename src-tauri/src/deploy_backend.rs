@@ -634,6 +634,34 @@ exit 0"#,
 }
 
 /// 把单个项目的产物上传到某台服务器并解压到中转目录
+fn remote_upload_zip(staging_release: &str, project: &BackendProject) -> String {
+    win_join(
+        &win_join(staging_release, "_upload"),
+        &format!("{}.zip", project.id),
+    )
+}
+
+async fn expand_uploaded_zip(
+    conn: &SshConnection,
+    project: &BackendProject,
+    staging_release: &str,
+    logger: &TaskLogger,
+) -> Result<()> {
+    let remote_zip = remote_upload_zip(staging_release, project);
+    let rel_path = relative_site_path(&project.remote_app_dir, &project.id);
+    let staging_bin = win_join(&win_join(staging_release, &rel_path), "bin");
+    let expand_script = format!(
+        r#"$ErrorActionPreference = 'Stop'
+if (Test-Path '{staging_bin}') {{ Remove-Item -LiteralPath '{staging_bin}' -Recurse -Force }}
+Expand-Archive -LiteralPath '{remote_zip}' -DestinationPath '{staging_bin}' -Force
+Write-Output '解压完成 -> {staging_bin}'"#,
+        staging_bin = staging_bin.replace('\'', "''"),
+        remote_zip = remote_zip.replace('\'', "''"),
+    );
+    run_ps(conn, &expand_script, logger).await?;
+    Ok(())
+}
+
 async fn upload_and_expand(
     conn: &SshConnection,
     project: &BackendProject,
@@ -644,10 +672,7 @@ async fn upload_and_expand(
     progress_span: f64,
     label: &str,
 ) -> Result<()> {
-    let remote_zip = win_join(
-        &win_join(staging_release, "_upload"),
-        &format!("{}.zip", project.id),
-    );
+    let remote_zip = remote_upload_zip(staging_release, project);
     upload_file(
         conn,
         zip_path,
@@ -658,17 +683,7 @@ async fn upload_and_expand(
         label,
     )
     .await?;
-    let rel_path = relative_site_path(&project.remote_app_dir, &project.id);
-    let staging_bin = win_join(&win_join(staging_release, &rel_path), "bin");
-    let expand_script = format!(
-        r#"$ErrorActionPreference = 'Stop'
-if (Test-Path '{staging_bin}') {{ Remove-Item -LiteralPath '{staging_bin}' -Recurse -Force }}
-Expand-Archive -LiteralPath '{remote_zip}' -DestinationPath '{staging_bin}' -Force
-Write-Output '解压完成 -> {staging_bin}'"#,
-        staging_bin = staging_bin,
-        remote_zip = remote_zip,
-    );
-    run_ps(conn, &expand_script, logger).await?;
+    expand_uploaded_zip(conn, project, staging_release, logger).await?;
     Ok(())
 }
 
@@ -835,55 +850,139 @@ pub async fn run_backend_deploy(
 if (Test-Path $uploadDir) {{ Remove-Item -LiteralPath $uploadDir -Recurse -Force }}"#,
         win_join(&staging_release, "_upload")
     );
-    let upload_total = zip_paths.len() as f64;
-    for (index, (project, zip_path)) in zip_paths.iter().enumerate() {
-        check_cancel(&cancel)?;
-        let progress_base = 12.0 + 30.0 * (index as f64 / upload_total);
-        let progress_span = 30.0 / upload_total;
-        logger.info(format!("上传 {} 到 {} ...", project.name, first_server.name));
-        upload_and_expand(
-            &first_conn,
-            project,
-            zip_path,
-            &staging_release,
-            &logger,
-            progress_base,
-            progress_span,
-            &format!("上传 {}", project.name),
-        )
-        .await?;
-    }
-    let _ = run_ps(&first_conn, &cleanup_script, &logger).await;
-    check_cancel(&cancel)?;
-
-    // 第 4 步：同步到组内其他服务器
     let other_servers = &servers[1..];
-    for (server_index, target) in other_servers.iter().enumerate() {
-        check_cancel(&cancel)?;
-        let progress = 45.0 + 12.0 * (server_index as f64 / other_servers.len().max(1) as f64);
-        logger.progress(progress, format!("同步发布目录到 {}", target.name));
-        match copy_mode {
-            CopyMode::Smb => {
-                smb_copy_to_target(&first_conn, target, &group, &release_name, &logger).await?;
-            }
-            CopyMode::Upload => {
-                logger.info(format!("连接 {} 并直接上传 ...", target.name));
-                let conn = ssh::connect(&config, &target.id).await?;
-                for (project, zip_path) in &zip_paths {
-                    check_cancel(&cancel)?;
+
+    if copy_mode == CopyMode::Upload && first_conn.jump_server.is_some() && !other_servers.is_empty() {
+        logger.info("采用 SSH 分发 zip：公网上传到跳板机一次，再内网拷到组内各 Windows，无需 D$");
+        let upload_total = zip_paths.len() as f64;
+        for (index, (project, zip_path)) in zip_paths.iter().enumerate() {
+            check_cancel(&cancel)?;
+            let progress_base = 12.0 + 42.0 * (index as f64 / upload_total);
+            let progress_span = 20.0 / upload_total;
+            logger.progress(progress_base, format!("上传 {} 到跳板机", project.name));
+            let started = Instant::now();
+            let mut last_report = Instant::now();
+            let staging = ssh::stage_on_jump(&first_conn, zip_path, |sent, total| {
+                if last_report.elapsed().as_millis() > 500 {
+                    let fraction = sent as f64 / total.max(1) as f64;
+                    let speed = sent as f64 / 1024.0 / 1024.0 / started.elapsed().as_secs_f64().max(0.001);
+                    logger.progress(
+                        progress_base + progress_span * fraction,
+                        format!("上传 {} 到跳板机 {:.1}% ({:.2} MB/s)", project.name, fraction * 100.0, speed),
+                    );
+                    last_report = Instant::now();
+                }
+            })
+            .await;
+            let staging = match staging {
+                Ok(value) => value,
+                Err(error) => {
+                    logger.warn(format!("跳板机中转失败，改为逐台上传: {:#}", error));
                     upload_and_expand(
-                        &conn,
+                        &first_conn,
                         project,
                         zip_path,
                         &staging_release,
                         &logger,
-                        progress,
-                        0.0,
-                        &format!("上传 {} → {}", project.name, target.name),
+                        progress_base,
+                        progress_span,
+                        &format!("上传 {}", project.name),
                     )
                     .await?;
+                    for target in other_servers {
+                        check_cancel(&cancel)?;
+                        let conn = ssh::connect(&config, &target.id).await?;
+                        upload_and_expand(
+                            &conn,
+                            project,
+                            zip_path,
+                            &staging_release,
+                            &logger,
+                            progress_base + progress_span,
+                            0.0,
+                            &format!("上传 {} → {}", project.name, target.name),
+                        )
+                        .await?;
+                        let _ = run_ps(&conn, &cleanup_script, &logger).await;
+                    }
+                    continue;
                 }
-                let _ = run_ps(&conn, &cleanup_script, &logger).await;
+            };
+
+            let remote_zip = remote_upload_zip(&staging_release, project);
+            let fanout = async {
+                logger.info(format!("内网分发 {} -> {}", project.name, first_server.name));
+                ssh::copy_jump_payload_to_windows(&first_conn, &staging, &first_conn, &remote_zip).await?;
+                expand_uploaded_zip(&first_conn, project, &staging_release, &logger).await?;
+                for target in other_servers {
+                    check_cancel(&cancel)?;
+                    logger.progress(
+                        progress_base + progress_span + 10.0,
+                        format!("内网分发 {} -> {}", project.name, target.name),
+                    );
+                    let conn = ssh::connect(&config, &target.id).await?;
+                    logger.info(ssh::describe_connection(&conn));
+                    ssh::copy_jump_payload_to_windows(&first_conn, &staging, &conn, &remote_zip).await?;
+                    expand_uploaded_zip(&conn, project, &staging_release, &logger).await?;
+                    let _ = run_ps(&conn, &cleanup_script, &logger).await;
+                    logger.success(format!("{} 已同步到 {}", project.name, target.name));
+                }
+                Ok::<(), anyhow::Error>(())
+            }
+            .await;
+            ssh::cleanup_jump_payload(&first_conn, &staging).await;
+            fanout?;
+        }
+        let _ = run_ps(&first_conn, &cleanup_script, &logger).await;
+    } else {
+        let upload_total = zip_paths.len() as f64;
+        for (index, (project, zip_path)) in zip_paths.iter().enumerate() {
+            check_cancel(&cancel)?;
+            let progress_base = 12.0 + 30.0 * (index as f64 / upload_total);
+            let progress_span = 30.0 / upload_total;
+            logger.info(format!("上传 {} 到 {} ...", project.name, first_server.name));
+            upload_and_expand(
+                &first_conn,
+                project,
+                zip_path,
+                &staging_release,
+                &logger,
+                progress_base,
+                progress_span,
+                &format!("上传 {}", project.name),
+            )
+            .await?;
+        }
+        let _ = run_ps(&first_conn, &cleanup_script, &logger).await;
+        check_cancel(&cancel)?;
+
+        for (server_index, target) in other_servers.iter().enumerate() {
+            check_cancel(&cancel)?;
+            let progress = 45.0 + 12.0 * (server_index as f64 / other_servers.len().max(1) as f64);
+            logger.progress(progress, format!("同步发布目录到 {}", target.name));
+            match copy_mode {
+                CopyMode::Smb => {
+                    smb_copy_to_target(&first_conn, target, &group, &release_name, &logger).await?;
+                }
+                CopyMode::Upload => {
+                    logger.info(format!("连接 {} 并直接上传 ...", target.name));
+                    let conn = ssh::connect(&config, &target.id).await?;
+                    for (project, zip_path) in &zip_paths {
+                        check_cancel(&cancel)?;
+                        upload_and_expand(
+                            &conn,
+                            project,
+                            zip_path,
+                            &staging_release,
+                            &logger,
+                            progress,
+                            0.0,
+                            &format!("上传 {} → {}", project.name, target.name),
+                        )
+                        .await?;
+                    }
+                    let _ = run_ps(&conn, &cleanup_script, &logger).await;
+                }
             }
         }
     }

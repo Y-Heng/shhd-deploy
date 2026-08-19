@@ -650,6 +650,26 @@ function normalizeRemotePath(path: string) {
   return trimmed.replace(/\/+$/, '')
 }
 
+/** SFTP 路径转成 Windows 本机路径：/D:/code、/D/code、D:/code → D:\code */
+function sftpPathToWindowsNative(path: string): string | null {
+  const trimmed = path.trim()
+  if (!trimmed || trimmed === '/' || trimmed === '\\') return null
+  const withSlash = trimmed.replace(/\//g, '\\')
+  const driveColon = withSlash.match(/^\\?([A-Za-z]:)(.*)$/)
+  if (driveColon) {
+    const rest = driveColon[2]
+    if (!rest) return `${driveColon[1].toUpperCase()}\\`
+    return `${driveColon[1].toUpperCase()}${rest}`
+  }
+  const posixDrive = withSlash.match(/^\\([A-Za-z])(\\.+)?$/)
+  if (posixDrive) return `${posixDrive[1].toUpperCase()}:${posixDrive[2] || '\\'}`
+  return null
+}
+
+function normalizeWindowsPath(path: string) {
+  return path.replace(/\//g, '\\').replace(/\\+$/, '').toUpperCase()
+}
+
 /** 从 xterm 缓冲区倒序推断当前 SSH 工作目录 */
 function inferSshCwd(): string | null {
   const session = getActiveSession()
@@ -701,15 +721,39 @@ function inferSshCwd(): string | null {
   return null
 }
 
+/** 根据提示符判断当前是 cmd 还是 PowerShell（用户可能手动切过） */
+function inferWindowsPromptShell(): 'powershell' | 'cmd' {
+  const session = getActiveSession()
+  if (!session) return 'powershell'
+  const buffer = session.terminal.buffer.active
+  const cursorLine = buffer.baseY + buffer.cursorY
+  const scanStart = Math.max(0, cursorLine - 39)
+  for (let lineIndex = cursorLine; lineIndex >= scanStart; lineIndex--) {
+    const text = buffer.getLine(lineIndex)?.translateToString(true).trim() ?? ''
+    if (!text) continue
+    if (/PS\s+[A-Za-z]:\\[^>]*>\s*$/i.test(text)) return 'powershell'
+    if (/[A-Za-z]:\\[^>]*>\s*$/.test(text)) return 'cmd'
+  }
+  return 'powershell'
+}
+
 /** 切回 SSH 时，把工作目录切到当前 SFTP 路径 */
 function syncTerminalToSftpPath(path: string) {
   const session = getActiveSession()
   if (!session || session.closed || !path) return
   const server = config.value?.servers.find(item => item.id === session.serverId)
   if (server?.os === 'windows') {
-    const winPath = path.replace(/\//g, '\\')
-    const escaped = winPath.replace(/'/g, "''")
-    session.terminal.paste(`Set-Location -LiteralPath '${escaped}'\n`)
+    const winPath = sftpPathToWindowsNative(path)
+    if (!winPath) return
+    const current = inferSshCwd()
+    if (current && normalizeWindowsPath(current) === normalizeWindowsPath(winPath)) return
+    if (inferWindowsPromptShell() === 'powershell') {
+      const escaped = winPath.replace(/'/g, "''")
+      session.terminal.paste(`Set-Location -LiteralPath '${escaped}'\n`)
+      return
+    }
+    const escaped = winPath.replace(/"/g, '""')
+    session.terminal.paste(`cd /d "${escaped}"\n`)
     return
   }
   const escaped = path.replace(/'/g, `'\\''`)

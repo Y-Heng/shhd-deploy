@@ -25,5 +25,8 @@
     "@vitejs/plugin-vue": "^5.2.1",
     "typescript": "^5.7.2",
     "vite": "^6.0.5"
+  },
+  "overrides": {
+    "@vueuse/core": "14.4.0"
   }
 }

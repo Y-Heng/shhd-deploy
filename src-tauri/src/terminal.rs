@@ -64,10 +64,8 @@ impl TerminalManager {
             .context("申请 PTY 失败")?;
         channel.request_shell(true).await.context("启动 shell 失败")?;
 
-        // Windows OpenSSH 交互必须走 shell（exec cmd 配 ConPTY 会空白无提示符）
-        if conn.server.os == OsType::Windows {
-            let _ = channel.data(&b"chcp 65001\r\n"[..]).await;
-        }
+        // Windows OpenSSH 交互必须走 login shell（exec 配 ConPTY 会空白）；默认再切到 PowerShell
+        if conn.server.os == OsType::Windows { let _ = channel.data(&b"chcp 65001 >nul & powershell -NoLogo\r\n"[..]).await; }
         crate::logger::append_log(&format!(
             "terminal 会话就绪 [{}] {} ms",
             server_id,
