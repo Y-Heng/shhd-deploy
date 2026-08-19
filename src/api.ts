@@ -10,6 +10,7 @@ import type {
   LocalDirEntry,
   LocalFileEntry,
   SftpEntry,
+  ProjectPackPreview,
 } from "./types";
 
 // Rust 命令调用封装
@@ -32,7 +33,19 @@ export const api = {
     copyMode?: CopyMode | null;
     mode?: DeployMode;
     backupSibling?: boolean;
+    previewPaths?: Record<string, string[]>;
+    newerThan?: string | null;
   }) => invoke<string>("start_backend_deploy", { request }),
+  previewBackendPack: (
+    groupId: string,
+    projectIds: string[],
+    newerThan?: string | null
+  ) =>
+    invoke<ProjectPackPreview[]>("preview_backend_pack", {
+      groupId,
+      projectIds,
+      newerThan,
+    }),
   startRollback: (releaseId: string) =>
     invoke<string>("start_rollback", { releaseId }),
   getReleases: () => invoke<ReleaseRecord[]>("get_releases"),

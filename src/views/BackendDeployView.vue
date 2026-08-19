@@ -11,6 +11,8 @@ import type {
   BackendProject,
   CopyMode,
   DeployMode,
+  PackTreeNode,
+  ProjectPackPreview,
   ReleaseRecord,
 } from "../types";
 import {
@@ -21,6 +23,14 @@ import {
 } from "../serviceScriptPresets";
 
 const props = defineProps<{ active?: boolean }>();
+
+// 本地日历日，用作当次部署的默认「改动起始日」
+function todayIso() {
+  const now = new Date();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${now.getFullYear()}-${month}-${day}`;
+}
 
 const config = ref<AppConfig | null>(null);
 const releases = ref<ReleaseRecord[]>([]);
@@ -33,6 +43,9 @@ const copyMode = ref<CopyMode>("upload");
 const deployMode = ref<DeployMode>("full");
 const backupSibling = ref(true);
 const stagedReleaseName = ref("");
+const deployNewerThan = ref<string | null>(todayIso());
+const ignoreRuleDraft = ref("");
+const whitelistRuleDraft = ref("");
 
 const task = backendDeployTask;
 
@@ -76,6 +89,7 @@ watch(
 
 async function reloadPage() {
   config.value = await api.getConfig();
+  deployNewerThan.value = todayIso();
   if (!config.value) return;
   for (const group of config.value.backendGroups) {
     if (!group.serverIds || group.serverIds.length === 0)
@@ -159,6 +173,12 @@ async function startDeploy() {
       : deployMode.value === "stage"
         ? "仅上传到中转"
         : "从中转替换";
+  const dateFilterText =
+    deployMode.value !== "replace" && deployNewerThan.value
+      ? `\n文件范围：只上传 ${deployNewerThan.value} 及之后改过的文件`
+      : deployMode.value !== "replace"
+        ? "\n文件范围：不按修改时间过滤"
+        : "";
   await ElMessageBox.confirm(
     `方式：${modeLabel}\n发布名称：${releaseName.value}\n项目：${projectNames}\n服务器（按顺序滚动）：${groupServerNames(
       selectedGroup.value
@@ -166,7 +186,7 @@ async function startDeploy() {
       deployMode.value !== "stage" && backupSibling.value
         ? `\n附加备份：应用目录 → 目录名-${datePrefix}`
         : ""
-    }\n\n确认执行？`,
+    }${dateFilterText}\n\n确认执行？`,
     "部署确认",
     { type: "warning", confirmButtonText: "执行" }
   );
@@ -178,6 +198,8 @@ async function startDeploy() {
       copyMode: copyMode.value,
       mode: deployMode.value,
       backupSibling: deployMode.value !== "stage" && backupSibling.value,
+      previewPaths: Object.keys(previewPaths.value).length > 0 ? previewPaths.value : undefined,
+      newerThan: deployMode.value === "replace" ? undefined : deployNewerThan.value || "",
     });
     await task.attach(taskId);
   } catch (error) {
@@ -231,12 +253,113 @@ async function refreshReleases() {
   releases.value = await api.getReleases();
 }
 
+const previewVisible = ref(false);
+const previewLoading = ref(false);
+const previewTab = ref("");
+const previewProjects = ref<ProjectPackPreview[]>([]);
+const previewPaths = ref<Record<string, string[]>>({});
+type PreviewTreeExpose = {
+  getCheckedKeys: (leafOnly?: boolean) => string[];
+  setCheckedKeys: (keys: string[]) => void;
+};
+
+const previewTreeRefs = new Map<string, PreviewTreeExpose>();
+
+function bindPreviewTree(projectId: string, element: unknown) {
+  if (element && typeof element === "object" && "getCheckedKeys" in element && "setCheckedKeys" in element)
+    previewTreeRefs.set(projectId, element as PreviewTreeExpose);
+  else previewTreeRefs.delete(projectId);
+}
+
+function collectIncludedPaths(nodes: PackTreeNode[]): string[] {
+  const paths: string[] = [];
+  for (const node of nodes) {
+    if (!node.isDir && node.included) paths.push(node.path);
+    if (node.children?.length) paths.push(...collectIncludedPaths(node.children));
+  }
+  return paths;
+}
+
+function collectAllFilePaths(nodes: PackTreeNode[]): string[] {
+  const paths: string[] = [];
+  for (const node of nodes) {
+    if (!node.isDir) paths.push(node.path);
+    if (node.children?.length) paths.push(...collectAllFilePaths(node.children));
+  }
+  return paths;
+}
+
+function setPreviewChecked(projectId: string, checked: boolean) {
+  const tree = previewTreeRefs.get(projectId);
+  const project = previewProjects.value.find((item) => item.projectId === projectId);
+  if (!tree || !project) return;
+  tree.setCheckedKeys(checked ? collectAllFilePaths(project.tree) : []);
+}
+
+const previewSummary = computed(() => {
+  const ids = selectedProjectIds.value.filter((id) => previewPaths.value[id]?.length);
+  if (ids.length === 0) return "";
+  const total = ids.reduce((sum, id) => sum + (previewPaths.value[id]?.length || 0), 0);
+  return `已按预览确认 ${ids.length} 个项目，共 ${total} 个文件`;
+});
+
+watch(selectedProjectIds, () => {
+  previewPaths.value = {};
+});
+
+async function openPreview() {
+  if (!selectedGroup.value || selectedProjectIds.value.length === 0) {
+    ElMessage.warning("请先勾选要部署的项目");
+    return;
+  }
+  previewLoading.value = true;
+  previewVisible.value = true;
+  previewTreeRefs.clear();
+  try {
+    previewProjects.value = await api.previewBackendPack(
+      selectedGroupId.value,
+      selectedProjectIds.value,
+      deployNewerThan.value || ""
+    );
+    previewTab.value = previewProjects.value[0]?.projectId || "";
+  } catch (error) {
+    previewVisible.value = false;
+    ElMessage.error(String(error));
+  } finally {
+    previewLoading.value = false;
+  }
+}
+
+function confirmPreview() {
+  const next: Record<string, string[]> = {};
+  for (const item of previewProjects.value) {
+    const tree = previewTreeRefs.get(item.projectId);
+    const keys = tree?.getCheckedKeys(true) ?? collectIncludedPaths(item.tree);
+    next[item.projectId] = keys.filter((path) => !path.endsWith("/"));
+  }
+  previewPaths.value = next;
+  previewVisible.value = false;
+  ElMessage.success("已按预览勾选，开始部署时只上传这些文件");
+}
+
 watch(
   () => task.finalState.value,
   (state) => {
     if (state === "success") refreshReleases();
   }
 );
+
+function remoteTargetPath(project: BackendProject) {
+  return (project.remoteAppDir || "").replace(/[\\/]+$/, "");
+}
+
+function blankProjectExtra() {
+  return {
+    ignoreRules: "",
+    whitelistRules: "",
+    newerThan: null as string | null,
+  };
+}
 
 function releaseStatusMeta(status: string): { label: string; type: "success" | "warning" | "info" | "danger" } {
   if (status === "success") return { label: "成功", type: "success" };
@@ -260,6 +383,9 @@ const projectForm = reactive<BackendProject>({
   stopScript: IIS_STOP_SCRIPT,
   startScript: IIS_START_SCRIPT,
   stopIisBeforeReplace: false,
+  ignoreRules: "",
+  whitelistRules: "",
+  newerThan: null,
 });
 
 async function persistConfig() {
@@ -306,6 +432,8 @@ async function removeGroup() {
 
 function openAddProject() {
   isNewProject.value = true;
+  ignoreRuleDraft.value = "";
+  whitelistRuleDraft.value = "";
   Object.assign(projectForm, {
     id: `project-${Date.now()}`,
     name: "",
@@ -317,12 +445,15 @@ function openAddProject() {
     stopScript: IIS_STOP_SCRIPT,
     startScript: IIS_START_SCRIPT,
     stopIisBeforeReplace: false,
+    ...blankProjectExtra(),
   });
   projectDialogVisible.value = true;
 }
 
 function openEditProject(project: BackendProject) {
   isNewProject.value = false;
+  ignoreRuleDraft.value = "";
+  whitelistRuleDraft.value = "";
   Object.assign(projectForm, JSON.parse(JSON.stringify(project)));
   if (!projectForm.stopScript && !projectForm.startScript && projectForm.stopIisBeforeReplace !== false) {
     projectForm.stopScript = IIS_STOP_SCRIPT;
@@ -330,6 +461,9 @@ function openEditProject(project: BackendProject) {
   }
   if (!projectForm.stopScript) projectForm.stopScript = "";
   if (!projectForm.startScript) projectForm.startScript = "";
+  projectForm.ignoreRules = projectForm.ignoreRules || "";
+  projectForm.whitelistRules = projectForm.whitelistRules || "";
+  projectForm.newerThan = projectForm.newerThan || null;
   projectDialogVisible.value = true;
 }
 
@@ -367,6 +501,83 @@ async function chooseLocalBinDir() {
   if (typeof selected === "string") projectForm.localBinDir = selected;
 }
 
+function splitRuleLines(text?: string | null) {
+  return (text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+function addRuleLine(field: "ignoreRules" | "whitelistRules", rule: string) {
+  const trimmed = rule.trim();
+  if (!trimmed) return;
+  const current = splitRuleLines(projectForm[field]);
+  if (current.includes(trimmed)) {
+    ElMessage.info("该规则已添加");
+    return;
+  }
+  current.push(trimmed);
+  projectForm[field] = current.join("\n");
+}
+
+function removeRuleLine(field: "ignoreRules" | "whitelistRules", rule: string) {
+  projectForm[field] = splitRuleLines(projectForm[field])
+    .filter((item) => item !== rule)
+    .join("\n");
+}
+
+function commitDraftRule(field: "ignoreRules" | "whitelistRules") {
+  const draft = field === "ignoreRules" ? ignoreRuleDraft : whitelistRuleDraft;
+  addRuleLine(field, draft.value);
+  draft.value = "";
+}
+
+function normalizeFsPath(path: string) {
+  return path.replace(/[/\\]+$/, "").replace(/\\/g, "/");
+}
+
+// 把本机绝对路径转成相对产物目录的 gitignore 规则
+function toProjectRelativeRule(absolutePath: string, isDirectory: boolean) {
+  const root = normalizeFsPath(projectForm.localBinDir);
+  const target = normalizeFsPath(absolutePath);
+  if (!root) {
+    ElMessage.warning("请先选择本地产物目录");
+    return null;
+  }
+  const rootLower = root.toLowerCase();
+  const targetLower = target.toLowerCase();
+  if (targetLower === rootLower) {
+    ElMessage.warning("请选择产物目录内的文件或文件夹，不能选根目录本身");
+    return null;
+  }
+  if (!targetLower.startsWith(`${rootLower}/`)) {
+    ElMessage.warning("请选择产物目录内的文件或文件夹");
+    return null;
+  }
+  let relative = target.slice(root.length).replace(/^\/+/, "");
+  if (isDirectory && !relative.endsWith("/")) relative += "/";
+  return relative;
+}
+
+async function pickRulePaths(field: "ignoreRules" | "whitelistRules", directory: boolean) {
+  if (!projectForm.localBinDir) {
+    ElMessage.warning("请先选择本地产物目录");
+    return;
+  }
+  const selected = await openDialog({
+    directory,
+    multiple: true,
+    defaultPath: projectForm.localBinDir,
+    title: directory ? "选择文件夹" : "选择文件",
+  });
+  if (!selected) return;
+  const paths = Array.isArray(selected) ? selected : [selected];
+  for (const absolutePath of paths) {
+    const rule = toProjectRelativeRule(absolutePath, directory);
+    if (rule) addRuleLine(field, rule);
+  }
+}
+
 async function saveProject() {
   if (!config.value || !selectedGroup.value) return;
   if (!projectForm.name || !projectForm.localBinDir || !projectForm.remoteAppDir) {
@@ -378,6 +589,9 @@ async function saveProject() {
   clone.stopScript = clone.stopScript || "";
   clone.startScript = clone.startScript || "";
   clone.stopIisBeforeReplace = false;
+  clone.ignoreRules = clone.ignoreRules || "";
+  clone.whitelistRules = clone.whitelistRules || "";
+  clone.newerThan = clone.newerThan || null;
   const group = selectedGroup.value;
   if (isNewProject.value) {
     group.projects.push(clone);
@@ -456,7 +670,7 @@ async function removeProject(project: BackendProject) {
                 <el-checkbox :value="project.id">
                   <b>{{ project.name }}</b>
                   <span class="project-path">
-                    {{ project.localBinDir }} → {{ project.remoteAppDir }}\bin
+                    {{ project.localBinDir }} → {{ remoteTargetPath(project) }}
                   </span>
                 </el-checkbox>
               </div>
@@ -510,7 +724,29 @@ async function removeProject(project: BackendProject) {
             </el-checkbox>
           </el-form-item>
 
+          <el-form-item v-if="deployMode !== 'replace'" label="改动起始日">
+            <el-date-picker
+              v-model="deployNewerThan"
+              type="date"
+              value-format="YYYY-MM-DD"
+              placeholder="清空则不过滤日期"
+              clearable
+            />
+            <el-button style="margin-left: 8px" @click="deployNewerThan = todayIso()">今天</el-button>
+            <div class="form-hint" style="margin-left: 0">
+              只上传这一天及之后改过的文件，更早的留在线上不动。新加但日期较老的依赖请写到白名单，或在预览里勾选。每次进入部署页默认今天。
+            </div>
+          </el-form-item>
+
           <el-form-item>
+            <el-button
+              v-if="deployMode !== 'replace'"
+              size="large"
+              :disabled="task.running.value"
+              @click="openPreview"
+            >
+              预览文件
+            </el-button>
             <el-button
               type="primary"
               size="large"
@@ -525,6 +761,7 @@ async function removeProject(project: BackendProject) {
                     : "开始部署"
               }}
             </el-button>
+            <span v-if="previewSummary" class="form-hint">{{ previewSummary }}</span>
           </el-form-item>
         </el-form>
         <TaskLogPanel
@@ -640,7 +877,7 @@ async function removeProject(project: BackendProject) {
                 placeholder="如 D:\code\sites\backup"
                 style="width: 420px"
               />
-              <span class="form-hint">替换前 bin 的备份位置（回滚数据源）</span>
+              <span class="form-hint">替换前应用目录的备份位置（回滚数据源）</span>
             </el-form-item>
             <el-form-item label="备机同步">
               <el-radio-group v-model="selectedGroup.copyMode">
@@ -694,7 +931,7 @@ async function removeProject(project: BackendProject) {
     <el-dialog
       v-model="projectDialogVisible"
       :title="isNewProject ? '添加项目' : '编辑项目'"
-      width="820px"
+      width="900px"
     >
       <el-form label-width="120px">
         <el-form-item label="项目名称">
@@ -703,7 +940,7 @@ async function removeProject(project: BackendProject) {
         <el-form-item label="本地产物目录">
           <el-input
             v-model="projectForm.localBinDir"
-            placeholder="发布产物 bin 目录"
+            placeholder="如 D:\Code\JianYue\build-info\to-backend\admin"
           >
             <template #append>
               <el-button @click="chooseLocalBinDir">选择</el-button>
@@ -713,8 +950,61 @@ async function removeProject(project: BackendProject) {
         <el-form-item label="服务器应用目录">
           <el-input
             v-model="projectForm.remoteAppDir"
-            placeholder="如 D:\code\sites\to\service\rest（bin 的父目录）"
+            placeholder="如 D:\code\sites\to\brand-service\admin"
           />
+        </el-form-item>
+        <el-form-item label="忽略规则">
+          <div class="rule-tag-editor">
+            <div v-if="splitRuleLines(projectForm.ignoreRules).length" class="rule-tag-list">
+              <el-tag
+                v-for="rule in splitRuleLines(projectForm.ignoreRules)"
+                :key="`ignore-${rule}`"
+                closable
+                effect="plain"
+                @close="removeRuleLine('ignoreRules', rule)"
+              >
+                {{ rule }}
+              </el-tag>
+            </div>
+            <div v-else class="rule-tag-empty">暂无规则，可选择产物目录内的文件/文件夹，或手动输入</div>
+            <div class="rule-tag-actions">
+              <el-button @click="pickRulePaths('ignoreRules', false)">选择文件</el-button>
+              <el-button @click="pickRulePaths('ignoreRules', true)">选择文件夹</el-button>
+              <el-input
+                v-model="ignoreRuleDraft"
+                placeholder="输入规则后回车，如 Configs/ 或 *.pdb"
+                @keyup.enter="commitDraftRule('ignoreRules')"
+              />
+            </div>
+          </div>
+          <div class="form-hint" style="margin-left: 0">匹配到的文件和目录不会打包、也不会覆盖线上（环境配置、模板等请加在这里）。</div>
+        </el-form-item>
+        <el-form-item label="白名单">
+          <div class="rule-tag-editor">
+            <div v-if="splitRuleLines(projectForm.whitelistRules).length" class="rule-tag-list">
+              <el-tag
+                v-for="rule in splitRuleLines(projectForm.whitelistRules)"
+                :key="`whitelist-${rule}`"
+                type="success"
+                closable
+                effect="plain"
+                @close="removeRuleLine('whitelistRules', rule)"
+              >
+                {{ rule }}
+              </el-tag>
+            </div>
+            <div v-else class="rule-tag-empty">暂无规则，可选择产物目录内的文件/文件夹，或手动输入</div>
+            <div class="rule-tag-actions">
+              <el-button @click="pickRulePaths('whitelistRules', false)">选择文件</el-button>
+              <el-button @click="pickRulePaths('whitelistRules', true)">选择文件夹</el-button>
+              <el-input
+                v-model="whitelistRuleDraft"
+                placeholder="输入规则后回车，如 Newtonsoft.Json.dll"
+                @keyup.enter="commitDraftRule('whitelistRules')"
+              />
+            </div>
+          </div>
+          <div class="form-hint" style="margin-left: 0">新加的依赖如果文件日期比较老，加到这里就会上传。忽略规则优先于白名单。</div>
         </el-form-item>
         <el-form-item label="健康检查地址">
           <el-input
@@ -769,6 +1059,54 @@ async function removeProject(project: BackendProject) {
       <template #footer>
         <el-button @click="projectDialogVisible = false">取消</el-button>
         <el-button type="primary" @click="saveProject">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="previewVisible" title="部署文件预览" width="860px" top="8vh">
+      <div v-loading="previewLoading">
+        <p class="form-hint" style="margin: 0 0 10px 0">
+          默认勾选将要上传的文件。灰色「早于改动起始日」的是被时间过滤掉的，新加的老包请勾上。忽略规则匹配的文件不会出现。
+        </p>
+        <el-tabs v-if="previewProjects.length > 0" v-model="previewTab">
+          <el-tab-pane
+            v-for="item in previewProjects"
+            :key="item.projectId"
+            :name="item.projectId"
+            :label="`${item.projectName}（${item.includedCount} 个，另 ${item.oldCount} 个未达日期）`"
+          >
+            <div class="preview-tree-toolbar">
+              <el-button size="small" @click="setPreviewChecked(item.projectId, true)">全选</el-button>
+              <el-button size="small" @click="setPreviewChecked(item.projectId, false)">全不选</el-button>
+            </div>
+            <div class="pack-tree-wrap">
+              <el-tree
+                :ref="(element) => bindPreviewTree(item.projectId, element)"
+                :data="item.tree"
+                show-checkbox
+                node-key="path"
+                :default-checked-keys="collectIncludedPaths(item.tree)"
+                :default-expanded-keys="item.tree.map((node) => node.path)"
+                :props="{ label: 'name', children: 'children' }"
+              >
+                <template #default="{ data }">
+                  <span class="pack-tree-node">
+                    <span>{{ data.name }}</span>
+                    <span v-if="!data.isDir" class="pack-tree-meta">
+                      {{ data.modifiedAt }}
+                      <em v-if="data.reason">{{ data.reason }}</em>
+                    </span>
+                  </span>
+                </template>
+              </el-tree>
+            </div>
+          </el-tab-pane>
+        </el-tabs>
+      </div>
+      <template #footer>
+        <el-button @click="previewVisible = false">取消</el-button>
+        <el-button type="primary" :disabled="previewLoading || previewProjects.length === 0" @click="confirmPreview">
+          按勾选部署
+        </el-button>
       </template>
     </el-dialog>
   </div>
@@ -834,9 +1172,59 @@ async function removeProject(project: BackendProject) {
   gap: 8px;
   margin-bottom: 8px;
 }
+.rule-tag-editor {
+  width: 100%;
+}
+.rule-tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.rule-tag-empty {
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.rule-tag-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.rule-tag-actions .el-input {
+  width: 280px;
+}
 .script-textarea :deep(textarea) {
   font-family: Consolas, "Courier New", monospace;
   font-size: 12px;
   line-height: 1.45;
+}
+.preview-tree-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.pack-tree-wrap {
+  max-height: 56vh;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--app-border, #2a3344);
+  border-radius: var(--app-radius, 8px);
+  background: var(--app-bg, #0f1218);
+}
+.pack-tree-node {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.pack-tree-meta {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.pack-tree-meta em {
+  font-style: normal;
+  margin-left: 6px;
+  color: var(--el-color-warning);
 }
 </style>

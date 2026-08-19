@@ -82,9 +82,9 @@ pub struct TunnelConfig {
 pub struct BackendProject {
     pub id: String,
     pub name: String,
-    /// 本地发布产物 bin 目录（如 D:\Code\JianYue\build-info\to-backend\admin\bin）
+    /// 本地发布产物目录（如 D:\Code\JianYue\build-info\to-backend\admin）
     pub local_bin_dir: String,
-    /// 服务器上应用根目录（bin 的父目录，如 D:\code\sites\to\brand-service\admin）
+    /// 服务器上应用目录（与本地一比一对应）
     pub remote_app_dir: String,
     /// 健康检查地址（在服务器本机执行，如 http://localhost:8081/admin/api/health）
     #[serde(default)]
@@ -104,6 +104,15 @@ pub struct BackendProject {
     /// 兼容旧配置：未写脚本时是否套用 IIS 默认方案
     #[serde(default = "default_true")]
     pub stop_iis_before_replace: bool,
+    /// gitignore 风格忽略规则（相对本地产物目录），匹配到的文件不打包、不替换。
+    #[serde(default)]
+    pub ignore_rules: String,
+    /// gitignore 风格白名单：即使早于「仅替换日期」也强制打包（如新加的老版本依赖包）。
+    #[serde(default)]
+    pub whitelist_rules: String,
+    /// 只打包此日期当天及之后修改的文件（YYYY-MM-DD），空表示不按时间过滤。
+    #[serde(default)]
+    pub newer_than: Option<String>,
 }
 
 fn default_health_retries() -> u32 {
@@ -602,7 +611,7 @@ fn default_template() -> AppConfig {
                 BackendProject {
                     id: "brand-service-admin".into(),
                     name: "brand-service/admin".into(),
-                    local_bin_dir: "D:\\Code\\JianYue\\build-info\\to-backend\\admin\\bin".into(),
+                    local_bin_dir: "D:\\Code\\JianYue\\build-info\\to-backend\\admin".into(),
                     remote_app_dir: "D:\\code\\sites\\to\\brand-service\\admin".into(),
                     health_check_url: Some("http://localhost:8081/admin/swagger".into()),
                     health_check_retries: 10,
@@ -610,11 +619,14 @@ fn default_template() -> AppConfig {
                     stop_script: String::new(),
                     start_script: String::new(),
                     stop_iis_before_replace: true,
+                    ignore_rules: "Configs/\nTemplate/\nfavicon.ico\nGlobal.asax\nLog4net.config\nApplicationInsights.config\nWeb.config".into(),
+                    whitelist_rules: String::new(),
+                    newer_than: None,
                 },
                 BackendProject {
                     id: "service-rest".into(),
                     name: "service/rest".into(),
-                    local_bin_dir: "D:\\Code\\JianYue\\build-info\\to-backend\\client\\bin".into(),
+                    local_bin_dir: "D:\\Code\\JianYue\\build-info\\to-backend\\client".into(),
                     remote_app_dir: "D:\\code\\sites\\to\\service\\rest".into(),
                     health_check_url: Some("http://localhost:8083/swagger".into()),
                     health_check_retries: 10,
@@ -622,6 +634,9 @@ fn default_template() -> AppConfig {
                     stop_script: String::new(),
                     start_script: String::new(),
                     stop_iis_before_replace: true,
+                    ignore_rules: String::new(),
+                    whitelist_rules: String::new(),
+                    newer_than: None,
                 },
             ],
         }],

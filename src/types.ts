@@ -66,6 +66,31 @@ export interface BackendProject {
   startScript?: string;
   /** 兼容旧配置：未写脚本时是否套用 IIS 默认方案 */
   stopIisBeforeReplace?: boolean;
+  /** gitignore 风格忽略规则，匹配到的文件不打包、不替换 */
+  ignoreRules?: string;
+  /** gitignore 风格白名单，即使早于日期也强制打包 */
+  whitelistRules?: string;
+  /** 兼容旧配置；实际过滤以当次部署的改动起始日为准 */
+  newerThan?: string | null;
+}
+
+export interface PackTreeNode {
+  path: string;
+  name: string;
+  isDir: boolean;
+  included: boolean;
+  reason: string;
+  modifiedAt?: string | null;
+  children: PackTreeNode[];
+}
+
+export interface ProjectPackPreview {
+  projectId: string;
+  projectName: string;
+  localDir: string;
+  includedCount: number;
+  oldCount: number;
+  tree: PackTreeNode[];
 }
 
 export type CopyMode = "smb" | "upload";

@@ -4,7 +4,9 @@ use crate::config::{
 use crate::events::TaskLogger;
 use crate::ssh::{self, SshConnection};
 use anyhow::{anyhow, bail, Context, Result};
+use chrono::TimeZone;
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
@@ -43,6 +45,12 @@ pub struct BackendDeployRequest {
     /// 替换前把应用目录复制为 <目录名>-yyyyMMdd（当天已存在则跳过）
     #[serde(default)]
     pub backup_sibling: bool,
+    /// 预览勾选确认后的精确文件列表（相对路径，按项目）。有则只打包这些文件。
+    #[serde(default)]
+    pub preview_paths: HashMap<String, Vec<String>>,
+    /// 本次部署的文件起始日期（YYYY-MM-DD）。有则覆盖项目配置。
+    #[serde(default)]
+    pub newer_than: Option<String>,
 }
 
 /// 发布历史记录（用于回滚）
@@ -154,16 +162,272 @@ fn wrap_project_scripts(project: &BackendProject, inner_script: &str) -> String 
     crate::service_scripts::wrap_with_service_scripts(&stop_script, &start_script, inner_script)
 }
 
+/// 线上实际替换目录：与 remote_app_dir 一比一
+fn project_live_dir(project: &BackendProject) -> String {
+    project.remote_app_dir.replace('/', "\\")
+}
+
+fn project_staging_dir(group: &BackendGroup, release_name: &str, project: &BackendProject) -> String {
+    project_pack_dir(&win_join(&group.staging_dir, release_name), project)
+}
+
+fn project_backup_dir(group: &BackendGroup, release_name: &str, project: &BackendProject) -> String {
+    project_pack_dir(&win_join(&group.backup_dir, release_name), project)
+}
+
+/// 中转/备份根目录下该项目的解压位置
+fn project_pack_dir(base: &str, project: &BackendProject) -> String {
+    let rel_path = relative_site_path(&project.remote_app_dir, &project.id);
+    win_join(base, &rel_path)
+}
+
+fn parse_newer_than(raw: &Option<String>) -> Result<Option<std::time::SystemTime>> {
+    let Some(text) = raw.as_ref().map(|value| value.trim().to_string()).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let naive = if let Ok(date) = chrono::NaiveDate::parse_from_str(&text, "%Y-%m-%d") {
+        date.and_hms_opt(0, 0, 0).context("无效日期")?
+    } else if let Ok(datetime) = chrono::NaiveDateTime::parse_from_str(&text, "%Y-%m-%d %H:%M:%S") {
+        datetime
+    } else {
+        bail!("文件起始日期格式应为 YYYY-MM-DD，当前: {}", text);
+    };
+    let local = chrono::Local
+        .from_local_datetime(&naive)
+        .single()
+        .or_else(|| chrono::Local.from_local_datetime(&naive).earliest())
+        .with_context(|| format!("无法解析本地时间: {}", text))?;
+    Ok(Some(local.into()))
+}
+
+fn build_gitignore(root: &Path, rules: &str) -> Result<ignore::gitignore::Gitignore> {
+    if rules.trim().is_empty() {
+        return Ok(ignore::gitignore::Gitignore::empty());
+    }
+    let mut builder = ignore::gitignore::GitignoreBuilder::new(root);
+    for line in rules.lines() {
+        let pattern = line.trim();
+        if pattern.is_empty() || pattern.starts_with('#') { continue; }
+        builder
+            .add_line(None, pattern)
+            .with_context(|| format!("忽略规则无效: {}", pattern))?;
+    }
+    builder.build().context("编译忽略规则失败")
+}
+
+fn path_is_ignored(gitignore: &ignore::gitignore::Gitignore, path: &Path, is_dir: bool) -> bool {
+    gitignore.matched_path_or_any_parents(path, is_dir).is_ignore()
+}
+
+fn file_is_too_old(path: &Path, cutoff: std::time::SystemTime) -> bool {
+    std::fs::metadata(path)
+        .ok()
+        .and_then(|meta| meta.modified().ok())
+        .map(|modified| modified < cutoff)
+        .unwrap_or(false)
+}
+
+fn extra_covers(relative: &str, extras: &[String]) -> bool {
+    extras.iter().any(|item| {
+        let normalized = item.replace('\\', "/").trim_matches('/').to_string();
+        if normalized.is_empty() { return false; }
+        relative == normalized || relative.starts_with(&format!("{}/", normalized))
+    })
+}
+
+struct PackFile {
+    relative: String,
+    included: bool,
+    reason: String,
+    modified_at: String,
+}
+
+/// 忽略规则永远排除；白名单/预览勾选可带上早于日期的文件
+fn classify_project_files(
+    project: &BackendProject,
+    extra_includes: &[String],
+    newer_than_override: Option<&str>,
+) -> Result<Vec<PackFile>> {
+    let source_dir = Path::new(&project.local_bin_dir);
+    if !source_dir.is_dir() {
+        bail!("本地产物目录不存在: {}", project.local_bin_dir);
+    }
+    let ignore = build_gitignore(source_dir, &project.ignore_rules)?;
+    let whitelist = build_gitignore(source_dir, &project.whitelist_rules)?;
+    let date_raw = match newer_than_override {
+        Some(value) if value.trim().is_empty() => None,
+        Some(value) => Some(value.to_string()),
+        None => project.newer_than.clone(),
+    };
+    let newer_than = parse_newer_than(&date_raw)?;
+    let mut files = Vec::new();
+    let walker = walkdir::WalkDir::new(source_dir).into_iter().filter_entry(|entry| {
+        !path_is_ignored(&ignore, entry.path(), entry.file_type().is_dir())
+    });
+    for entry in walker {
+        let entry = entry?;
+        if !entry.file_type().is_file() { continue; }
+        let path = entry.path();
+        if path_is_ignored(&ignore, path, false) { continue; }
+        let relative = path
+            .strip_prefix(source_dir)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        if relative.is_empty() { continue; }
+        let modified_at = std::fs::metadata(path)
+            .ok()
+            .and_then(|meta| meta.modified().ok())
+            .map(|time| chrono::DateTime::<chrono::Local>::from(time).format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_default();
+        let too_old = newer_than.map(|cutoff| file_is_too_old(path, cutoff)).unwrap_or(false);
+        let in_extra = extra_covers(&relative, extra_includes);
+        let in_whitelist = path_is_ignored(&whitelist, path, false);
+        let (included, reason) = if too_old && (in_extra || in_whitelist) {
+            (true, if in_extra { "预览勾选".into() } else { "白名单".into() })
+        } else if too_old {
+            (false, "早于改动起始日".into())
+        } else {
+            (true, String::new())
+        };
+        files.push(PackFile { relative, included, reason, modified_at });
+    }
+    files.sort_by(|left, right| left.relative.cmp(&right.relative));
+    Ok(files)
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackTreeNode {
+    pub path: String,
+    pub name: String,
+    pub is_dir: bool,
+    pub included: bool,
+    pub reason: String,
+    pub modified_at: Option<String>,
+    pub children: Vec<PackTreeNode>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectPackPreview {
+    pub project_id: String,
+    pub project_name: String,
+    pub local_dir: String,
+    pub included_count: u64,
+    pub old_count: u64,
+    pub tree: Vec<PackTreeNode>,
+}
+
+#[derive(Default)]
+struct TreeBuilder {
+    dirs: BTreeMap<String, TreeBuilder>,
+    file: Option<PackFile>,
+}
+
+fn build_pack_tree(files: &[PackFile]) -> Vec<PackTreeNode> {
+    let mut root = TreeBuilder::default();
+    for file in files {
+        let mut current = &mut root;
+        let parts: Vec<&str> = file.relative.split('/').filter(|part| !part.is_empty()).collect();
+        for (index, part) in parts.iter().enumerate() {
+            if index + 1 == parts.len() {
+                current.dirs.entry((*part).to_string()).or_default().file = Some(PackFile {
+                    relative: file.relative.clone(),
+                    included: file.included,
+                    reason: file.reason.clone(),
+                    modified_at: file.modified_at.clone(),
+                });
+            } else {
+                current = current.dirs.entry((*part).to_string()).or_default();
+            }
+        }
+    }
+    flatten_tree("", &root)
+}
+
+fn flatten_tree(parent: &str, builder: &TreeBuilder) -> Vec<PackTreeNode> {
+    builder
+        .dirs
+        .iter()
+        .map(|(name, child)| {
+            let path = if parent.is_empty() { name.clone() } else { format!("{}/{}", parent, name) };
+            if let Some(file) = &child.file {
+                PackTreeNode {
+                    path,
+                    name: name.clone(),
+                    is_dir: false,
+                    included: file.included,
+                    reason: file.reason.clone(),
+                    modified_at: Some(file.modified_at.clone()).filter(|value| !value.is_empty()),
+                    children: Vec::new(),
+                }
+            } else {
+                let children = flatten_tree(&path, child);
+                let included = children.iter().any(|node| node.included);
+                PackTreeNode {
+                    path,
+                    name: name.clone(),
+                    is_dir: true,
+                    included,
+                    reason: String::new(),
+                    modified_at: None,
+                    children,
+                }
+            }
+        })
+        .collect()
+}
+
+/// 部署预览：返回每个项目过滤后的文件树（忽略的不出现，早于改动起始日的默认不勾选）
+pub fn preview_backend_pack(
+    config: &AppConfig,
+    group_id: &str,
+    project_ids: &[String],
+    newer_than: Option<&str>,
+) -> Result<Vec<ProjectPackPreview>> {
+    let group = config
+        .backend_groups
+        .iter()
+        .find(|candidate| candidate.id == group_id)
+        .with_context(|| format!("找不到负载组: {}", group_id))?;
+    let mut previews = Vec::new();
+    for project in &group.projects {
+        if !project_ids.contains(&project.id) { continue; }
+        let files = classify_project_files(project, &[], newer_than)?;
+        let included_count = files.iter().filter(|file| file.included).count() as u64;
+        let old_count = files.iter().filter(|file| !file.included).count() as u64;
+        previews.push(ProjectPackPreview {
+            project_id: project.id.clone(),
+            project_name: project.name.clone(),
+            local_dir: project.local_bin_dir.clone(),
+            included_count,
+            old_count,
+            tree: build_pack_tree(&files),
+        });
+    }
+    if previews.is_empty() { bail!("未选择任何项目"); }
+    Ok(previews)
+}
+
 fn check_cancel(cancel: &CancellationToken) -> Result<()> {
     if cancel.is_cancelled() { bail!("任务已被取消"); }
     Ok(())
 }
 
-/// 把本地 bin 目录压缩为 zip（阻塞操作，放到独立线程执行）
-fn zip_directory(source_dir: &Path, zip_path: &Path) -> Result<(u64, u64)> {
+/// 按忽略规则、时间、白名单和预览勾选压缩产物
+fn zip_project_directory(
+    project: &BackendProject,
+    zip_path: &Path,
+    extra_includes: &[String],
+    only_paths: Option<&HashSet<String>>,
+    newer_than_override: Option<&str>,
+) -> Result<(u64, u64, u64)> {
     use std::io::{Read, Write};
     use zip::write::SimpleFileOptions;
 
+    let source_dir = Path::new(&project.local_bin_dir);
+    let files = classify_project_files(project, extra_includes, newer_than_override)?;
     let zip_file = std::fs::File::create(zip_path)
         .with_context(|| format!("创建压缩包失败: {}", zip_path.display()))?;
     let mut zip_writer = zip::ZipWriter::new(zip_file);
@@ -172,38 +436,41 @@ fn zip_directory(source_dir: &Path, zip_path: &Path) -> Result<(u64, u64)> {
         .large_file(true);
 
     let mut file_count: u64 = 0;
+    let mut skipped_count: u64 = 0;
     let mut total_bytes: u64 = 0;
     let mut read_buffer = vec![0u8; 1024 * 1024];
 
-    for entry in walkdir::WalkDir::new(source_dir) {
-        let entry = entry?;
-        let path = entry.path();
-        let relative = path
-            .strip_prefix(source_dir)
-            .unwrap()
-            .to_string_lossy()
-            .replace('\\', "/");
-        if relative.is_empty() {
+    for file in files {
+        let pack = match only_paths {
+            Some(paths) => paths.contains(&file.relative),
+            None => file.included,
+        };
+        if !pack {
+            skipped_count += 1;
             continue;
         }
-        if path.is_dir() {
-            zip_writer.add_directory(relative, options)?;
-            continue;
+        let mut abs_path = source_dir.to_path_buf();
+        for part in file.relative.split('/') {
+            abs_path.push(part);
         }
-        zip_writer.start_file(relative, options)?;
-        let mut source_file = std::fs::File::open(path)?;
+        zip_writer.start_file(&file.relative, options)?;
+        let mut source_file = std::fs::File::open(&abs_path)?;
         loop {
             let read = source_file.read(&mut read_buffer)?;
-            if read == 0 {
-                break;
-            }
+            if read == 0 { break; }
             zip_writer.write_all(&read_buffer[..read])?;
             total_bytes += read as u64;
         }
         file_count += 1;
     }
     zip_writer.finish()?;
-    Ok((file_count, total_bytes))
+    if file_count == 0 {
+        bail!(
+            "{} 过滤后没有可部署文件（请检查忽略规则、文件起始日期、白名单或预览勾选）",
+            project.name
+        );
+    }
+    Ok((file_count, skipped_count, total_bytes))
 }
 
 /// SFTP 上传单个文件，带进度回调
@@ -459,16 +726,9 @@ async fn deploy_to_server(
     date_suffix: &str,
     logger: &TaskLogger,
 ) -> Result<()> {
-    let rel_path = relative_site_path(&project.remote_app_dir, &project.id);
-    let app_bin = win_join(&project.remote_app_dir, "bin");
-    let staging_bin = win_join(
-        &win_join(&win_join(&group.staging_dir, release_name), &rel_path),
-        "bin",
-    );
-    let backup_bin = win_join(
-        &win_join(&win_join(&group.backup_dir, release_name), &rel_path),
-        "bin",
-    );
+    let live_dir = project_live_dir(project);
+    let staging_dir = project_staging_dir(group, release_name, project);
+    let backup_dir = project_backup_dir(group, release_name, project);
     let sibling_dir = format!(
         "{}-{}",
         project.remote_app_dir.trim_end_matches('\\'),
@@ -476,8 +736,8 @@ async fn deploy_to_server(
     );
 
     logger.info(format!(
-        "[{}] 部署 {}: 备份并替换 bin",
-        conn.server.name, project.name
+        "[{}] 部署 {}: 覆盖 {}（不删除线上其它文件）",
+        conn.server.name, project.name, live_dir
     ));
 
     let sibling_block = if backup_sibling {
@@ -505,27 +765,27 @@ if ($actionExit -eq 0) {{
     let inner = format!(
         r#"{sibling_block}
 if ($actionExit -eq 0) {{
-  if (-not (Test-Path -LiteralPath '{staging_bin}')) {{ Write-Output '暂存目录不存在'; $actionExit = 4 }}
+  if (-not (Test-Path -LiteralPath '{staging_dir}')) {{ Write-Output '暂存目录不存在'; $actionExit = 4 }}
   else {{
-    if (Test-Path -LiteralPath '{app_bin}') {{
-      robocopy '{app_bin}' '{backup_bin}' /E /R:2 /W:3 /NP /NFL /NDL | Out-Null
+    if (Test-Path -LiteralPath '{live_dir}') {{
+      robocopy '{live_dir}' '{backup_dir}' /E /R:2 /W:3 /NP /NFL /NDL | Out-Null
       if ($LASTEXITCODE -ge 8) {{ Write-Output '备份失败'; $actionExit = 2 }}
-      else {{ Write-Output ('备份完成 -> {backup_bin}') }}
+      else {{ Write-Output ('备份完成 -> {backup_dir}') }}
     }} else {{
-      Write-Output '目标 bin 不存在，跳过备份（首次部署）'
+      Write-Output '目标目录不存在，跳过备份（首次部署）'
     }}
     if ($actionExit -eq 0) {{
-      robocopy '{staging_bin}' '{app_bin}' /MIR /R:5 /W:2 /NP /NFL /NDL | Out-Null
+      robocopy '{staging_dir}' '{live_dir}' /E /R:5 /W:2 /NP /NFL /NDL | Out-Null
       if ($LASTEXITCODE -ge 8) {{ Write-Output '替换失败'; $actionExit = 3 }}
-      else {{ Write-Output '替换完成' }}
+      else {{ Write-Output '覆盖完成（未删除线上其它文件）' }}
     }}
   }}
 }}
 "#,
         sibling_block = sibling_block,
-        staging_bin = staging_bin.replace('\'', "''"),
-        app_bin = app_bin.replace('\'', "''"),
-        backup_bin = backup_bin.replace('\'', "''"),
+        staging_dir = staging_dir.replace('\'', "''"),
+        live_dir = live_dir.replace('\'', "''"),
+        backup_dir = backup_dir.replace('\'', "''"),
     );
     let script = wrap_project_scripts(project, &inner);
     let (stop_script, _) = crate::service_scripts::resolve_scripts(project);
@@ -648,14 +908,13 @@ async fn expand_uploaded_zip(
     logger: &TaskLogger,
 ) -> Result<()> {
     let remote_zip = remote_upload_zip(staging_release, project);
-    let rel_path = relative_site_path(&project.remote_app_dir, &project.id);
-    let staging_bin = win_join(&win_join(staging_release, &rel_path), "bin");
+    let staging_dir = project_pack_dir(staging_release, project);
     let expand_script = format!(
         r#"$ErrorActionPreference = 'Stop'
-if (Test-Path '{staging_bin}') {{ Remove-Item -LiteralPath '{staging_bin}' -Recurse -Force }}
-Expand-Archive -LiteralPath '{remote_zip}' -DestinationPath '{staging_bin}' -Force
-Write-Output '解压完成 -> {staging_bin}'"#,
-        staging_bin = staging_bin.replace('\'', "''"),
+if (Test-Path '{staging_dir}') {{ Remove-Item -LiteralPath '{staging_dir}' -Recurse -Force }}
+Expand-Archive -LiteralPath '{remote_zip}' -DestinationPath '{staging_dir}' -Force
+Write-Output '解压完成 -> {staging_dir}'"#,
+        staging_dir = staging_dir.replace('\'', "''"),
         remote_zip = remote_zip.replace('\'', "''"),
     );
     run_ps(conn, &expand_script, logger).await?;
@@ -787,6 +1046,49 @@ pub async fn run_backend_deploy(
         if file_count == 0 {
             bail!("本地产物目录为空: {}", project.local_bin_dir);
         }
+        let extra = request
+            .preview_paths
+            .get(&project.id)
+            .cloned()
+            .unwrap_or_default();
+        let files = classify_project_files(project, &extra, request.newer_than.as_deref())?;
+        let included = if let Some(paths) = request.preview_paths.get(&project.id) {
+            let selected: HashSet<String> = paths.iter().cloned().collect();
+            files.iter().filter(|file| selected.contains(&file.relative)).count() as u64
+        } else {
+            files.iter().filter(|file| file.included).count() as u64
+        };
+        if included == 0 {
+            bail!(
+                "{} 按忽略规则/日期/白名单/预览过滤后没有可部署文件（目录共 {} 个文件）",
+                project.name,
+                file_count
+            );
+        }
+        if request.preview_paths.contains_key(&project.id) {
+            logger.info(format!("{}: 按预览勾选打包 {} 个文件", project.name, included));
+        }
+        if let Some(cutoff) = parse_newer_than(
+            &match request.newer_than.as_deref() {
+                Some(value) if value.trim().is_empty() => None,
+                Some(value) => Some(value.to_string()),
+                None => project.newer_than.clone(),
+            },
+        )? {
+            logger.info(format!(
+                "{}: 只上传 {} 及之后改过的文件（白名单/预览勾选除外），当前收录 {} / {} 个",
+                project.name,
+                chrono::DateTime::<chrono::Local>::from(cutoff).format("%Y-%m-%d"),
+                included,
+                file_count
+            ));
+        }
+        if !project.ignore_rules.trim().is_empty() || !project.whitelist_rules.trim().is_empty() {
+            logger.info(format!(
+                "{}: 忽略/白名单已启用，收录 {} / {} 个文件",
+                project.name, included, file_count
+            ));
+        }
         if let Some(newest_time) = newest {
             let age = std::time::SystemTime::now()
                 .duration_since(newest_time)
@@ -821,16 +1123,34 @@ pub async fn run_backend_deploy(
     let mut zip_paths: Vec<(BackendProject, PathBuf)> = Vec::new();
     for project in &projects {
         let zip_path = temp_dir.join(format!("{}.zip", project.id));
-        let source_dir = PathBuf::from(&project.local_bin_dir);
         let zip_path_clone = zip_path.clone();
-        let (file_count, total_bytes) =
-            tokio::task::spawn_blocking(move || zip_directory(&source_dir, &zip_path_clone))
-                .await??;
+        let project_for_zip = project.clone();
+        let extra = request
+            .preview_paths
+            .get(&project.id)
+            .cloned()
+            .unwrap_or_default();
+        let only_paths: Option<HashSet<String>> = request
+            .preview_paths
+            .get(&project.id)
+            .map(|paths| paths.iter().cloned().collect());
+        let newer_than = request.newer_than.clone();
+        let (file_count, skipped_count, total_bytes) = tokio::task::spawn_blocking(move || {
+            zip_project_directory(
+                &project_for_zip,
+                &zip_path_clone,
+                &extra,
+                only_paths.as_ref(),
+                newer_than.as_deref(),
+            )
+        })
+        .await??;
         let zip_size = std::fs::metadata(&zip_path)?.len();
         logger.info(format!(
-            "压缩 {}: {} 个文件 {:.2} MB -> {:.2} MB",
+            "压缩 {}: 收录 {} 个文件（跳过 {} 个），{:.2} MB -> {:.2} MB",
             project.name,
             file_count,
+            skipped_count,
             total_bytes as f64 / 1024.0 / 1024.0,
             zip_size as f64 / 1024.0 / 1024.0
         ));
@@ -1122,7 +1442,7 @@ pub async fn run_rollback(
 
     logger.state("running", format!("回滚 {}", record.release_name));
     logger.warn(format!(
-        "开始回滚发布 {}（恢复替换前备份的 bin）",
+        "开始回滚发布 {}（恢复替换前备份）",
         record.release_name
     ));
 
@@ -1136,24 +1456,20 @@ pub async fn run_rollback(
         let conn = ssh::connect(&config, &server.id).await?;
         for project in &projects {
             check_cancel(&cancel)?;
-            let rel_path = relative_site_path(&project.remote_app_dir, &project.id);
-            let app_bin = win_join(&project.remote_app_dir, "bin");
-            let backup_bin = win_join(
-                &win_join(&win_join(&group.backup_dir, &record.release_name), &rel_path),
-                "bin",
-            );
+            let live_dir = project_live_dir(project);
+            let backup_dir = project_backup_dir(&group, &record.release_name, project);
             let script = wrap_project_scripts(
                 project,
                 &format!(
-                    r#"if (-not (Test-Path -LiteralPath '{backup_bin}')) {{ Write-Output '备份目录不存在: {backup_bin}'; $actionExit = 4 }}
+                    r#"if (-not (Test-Path -LiteralPath '{backup_dir}')) {{ Write-Output '备份目录不存在: {backup_dir}'; $actionExit = 4 }}
 else {{
-  robocopy '{backup_bin}' '{app_bin}' /MIR /R:5 /W:2 /NP /NFL /NDL | Out-Null
+  robocopy '{backup_dir}' '{live_dir}' /E /R:5 /W:2 /NP /NFL /NDL | Out-Null
   if ($LASTEXITCODE -ge 8) {{ Write-Output '恢复失败'; $actionExit = 3 }}
   else {{ Write-Output '已恢复备份' }}
 }}
 "#,
-                    backup_bin = backup_bin.replace('\'', "''"),
-                    app_bin = app_bin.replace('\'', "''"),
+                    backup_dir = backup_dir.replace('\'', "''"),
+                    live_dir = live_dir.replace('\'', "''"),
                 ),
             );
             logger.info(format!("[{}] 回滚 {}", server.name, project.name));

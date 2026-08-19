@@ -135,7 +135,7 @@ fn fill_placeholders(script: &str, app_dir: &str, app_bin: &str, project_name: &
 
 /// 解析项目停止/启动脚本；旧配置未写脚本且开启了 stopIisBeforeReplace 时套用 IIS 方案
 pub fn resolve_scripts(project: &BackendProject) -> (String, String) {
-    let app_bin = format!("{}\\bin", project.remote_app_dir.trim_end_matches('\\'));
+    let app_bin = project.remote_app_dir.trim_end_matches('\\').to_string();
     let fill = |script: &str| {
         fill_placeholders(script, &project.remote_app_dir, &app_bin, &project.name)
     };

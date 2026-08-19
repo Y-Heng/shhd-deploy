@@ -15,7 +15,7 @@ mod terminal;
 mod tunnel;
 
 use config::AppConfig;
-use deploy_backend::{BackendDeployRequest, ReleaseRecord};
+use deploy_backend::{BackendDeployRequest, ProjectPackPreview, ReleaseRecord};
 use deploy_frontend::FrontendReleaseRecord;
 use events::{TaskLogger, TaskRegistry};
 use std::collections::HashMap;
@@ -336,6 +336,22 @@ pub(crate) async fn launch_docker_deploy(app: &AppHandle, target_id: String) -> 
         finish_task(tasks, logger, cancel, result).await;
     });
     task_id
+}
+
+#[tauri::command]
+async fn preview_backend_pack(
+    state: State<'_, AppState>,
+    group_id: String,
+    project_ids: Vec<String>,
+    newer_than: Option<String>,
+) -> Result<Vec<ProjectPackPreview>, String> {
+    let config = state.config.read().await.clone();
+    tokio::task::spawn_blocking(move || {
+        deploy_backend::preview_backend_pack(&config, &group_id, &project_ids, newer_than.as_deref())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| format!("{:#}", error))
 }
 
 #[tauri::command]
@@ -858,6 +874,7 @@ pub fn run() {
             stop_tunnel,
             tunnel_status,
             start_backend_deploy,
+            preview_backend_pack,
             start_rollback,
             get_releases,
             get_frontend_releases,

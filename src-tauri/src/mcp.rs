@@ -457,6 +457,8 @@ async fn call_tool(app: &AppHandle, tool_name: &str, arguments: Value) -> Result
                 copy_mode: None,
                 mode,
                 backup_sibling,
+                preview_paths: Default::default(),
+                newer_than: Some(chrono::Local::now().format("%Y-%m-%d").to_string()),
             };
             let task_id = crate::launch_backend_deploy(app, request).await;
             Ok(format!(
@@ -598,6 +600,7 @@ fn build_config_summary(config: &AppConfig) -> String {
                     "name": project.name,
                     "localBinDir": project.local_bin_dir,
                     "remoteAppDir": project.remote_app_dir,
+                    "newerThan": project.newer_than,
                 })).collect::<Vec<_>>(),
             })
         })
