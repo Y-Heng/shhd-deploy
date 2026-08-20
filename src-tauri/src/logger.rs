@@ -1,3 +1,5 @@
+//! 诊断日志：默认关闭；开启后按日写入配置目录 logs/app-yyyyMMdd.log。
+
 use crate::config::config_dir;
 use anyhow::{Context, Result};
 use chrono::Local;
@@ -33,6 +35,7 @@ pub fn set_enabled(enabled: bool) {
     LOG_ENABLED.store(enabled, Ordering::Relaxed);
 }
 
+/// 当前是否开启诊断日志
 pub fn is_enabled() -> bool {
     LOG_ENABLED.load(Ordering::Relaxed)
 }

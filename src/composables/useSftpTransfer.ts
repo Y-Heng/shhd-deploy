@@ -1,3 +1,5 @@
+/** 全局 SFTP 上传进度：离开终端页后仍以浮动条显示，可取消 */
+
 import { ref } from "vue";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { api } from "../api";

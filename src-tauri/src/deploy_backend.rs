@@ -1,3 +1,5 @@
+//! 后端部署：校验产物、压缩上传中转、备机同步、滚动替换、健康检查与回滚。
+
 use crate::config::{
     AppConfig, AuthConfig, BackendGroup, BackendProject, CopyMode, ServerConfig,
 };
@@ -67,6 +69,7 @@ pub struct ReleaseRecord {
     pub status: String,
 }
 
+/// 读取发布历史（文件不存在则空列表）
 pub fn load_releases() -> Vec<ReleaseRecord> {
     let path = crate::config::releases_file_path();
     std::fs::read_to_string(path)
@@ -304,6 +307,7 @@ fn classify_project_files(
     Ok(files)
 }
 
+/// 打包预览树节点：是否纳入、是否被忽略、修改时间
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PackTreeNode {
@@ -318,6 +322,7 @@ pub struct PackTreeNode {
     pub children: Vec<PackTreeNode>,
 }
 
+/// 单个项目的打包预览（树 + 计数）
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectPackPreview {
@@ -417,6 +422,7 @@ fn sort_pack_nodes(nodes: &mut [PackTreeNode]) {
 }
 
 /// 部署预览：忽略文件会显示在末尾且默认不勾选；早于改动起始日的默认不勾选
+/// 按忽略规则、白名单和改动起始日生成打包预览树
 pub fn preview_backend_pack(
     config: &AppConfig,
     group_id: &str,

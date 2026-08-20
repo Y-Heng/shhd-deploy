@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** 按探测到的系统类型画操作系统图标 */
 import { computed } from "vue";
 import type { DetectedOs } from "../types";
 

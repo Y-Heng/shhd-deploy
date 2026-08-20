@@ -1,3 +1,5 @@
+//! 交互式 SSH 终端（PTY）。Windows 登录壳是 cmd 时会切到 PowerShell 并关掉 PSReadLine。
+
 use crate::config::{AppConfig, OsType};
 use crate::ssh;
 use anyhow::{Context, Result};
@@ -335,6 +337,7 @@ impl TerminalManager {
         Ok(session_id)
     }
 
+    /// 向会话写入用户输入（data 为明文，内部按字节发到 PTY）
     pub async fn write(&self, session_id: &str, data: &str) {
         let sender = { self.sessions.lock().await.get(session_id).cloned() };
         if let Some(sender) = sender {
@@ -344,6 +347,7 @@ impl TerminalManager {
         }
     }
 
+    /// 调整会话窗口大小
     pub async fn resize(&self, session_id: &str, cols: u32, rows: u32) {
         let sender = { self.sessions.lock().await.get(session_id).cloned() };
         if let Some(sender) = sender {
@@ -351,6 +355,7 @@ impl TerminalManager {
         }
     }
 
+    /// 关闭会话并移出管理器
     pub async fn close(&self, session_id: &str) {
         let sender = { self.sessions.lock().await.remove(session_id) };
         if let Some(sender) = sender {

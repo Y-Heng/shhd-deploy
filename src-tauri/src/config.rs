@@ -1,3 +1,5 @@
+//! 应用配置的读写与数据结构（服务器、隧道、部署映射、MCP、日志等）。
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -418,18 +420,22 @@ pub fn config_dir() -> PathBuf {
     base_dir.join("shhd-deploy")
 }
 
+/// 主配置文件路径
 pub fn config_file_path() -> PathBuf {
     config_dir().join("config.json")
 }
 
+/// 后端发布历史
 pub fn releases_file_path() -> PathBuf {
     config_dir().join("releases.json")
 }
 
+/// 前端发布历史
 pub fn frontend_releases_file_path() -> PathBuf {
     config_dir().join("frontend_releases.json")
 }
 
+/// TOFU 主机指纹缓存
 pub fn known_hosts_file_path() -> PathBuf {
     config_dir().join("known_hosts.json")
 }

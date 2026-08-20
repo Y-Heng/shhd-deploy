@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** SSH 多标签终端 + SFTP + 常用命令；可弹出独立窗口 */
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowRight, Close, Delete, EditPen, Folder, Loading, Plus, Search } from '@element-plus/icons-vue'

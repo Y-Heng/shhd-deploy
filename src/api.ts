@@ -13,12 +13,15 @@ import type {
   ProjectPackPreview,
 } from "./types";
 
-// Rust 命令调用封装
+/** 前端调用 Rust 命令的封装，字段名与 Tauri 侧 camelCase 对齐 */
 export const api = {
+  /** 读取完整配置 */
   getConfig: () => invoke<AppConfig>("get_config"),
+  /** 保存配置并热更新 */
   saveConfig: (config: AppConfig) => invoke<void>("save_config", { config }),
   getConfigPath: () => invoke<string>("get_config_path"),
   testServer: (serverId: string) => invoke<string>("test_server", { serverId }),
+  /** 用未保存的表单草稿测连通 */
   testServerDraft: (server: ServerConfig) =>
     invoke<string>("test_server_draft", { server }),
 
@@ -123,6 +126,7 @@ export const api = {
       fullscreen: options?.fullscreen,
     }),
 
+  /** MCP 运行中返回端口，已停止返回 null */
   getMcpStatus: () => invoke<number | null>("get_mcp_status"),
 
   getLogPath: () => invoke<string>("get_log_path"),

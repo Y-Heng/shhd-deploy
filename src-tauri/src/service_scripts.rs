@@ -1,3 +1,5 @@
+//! 后端替换时用的停止/启动脚本模板（IIS / Java），以及把脚本包进替换流程。
+
 use crate::config::BackendProject;
 
 /// IIS：只停物理路径匹配到的网站或应用程序池，不停 W3SVC / 不做 iisreset
@@ -122,10 +124,12 @@ pub const JAVA_START_SCRIPT: &str = r#"if ($serviceName -and $serviceName -ne '�
 }
 "#;
 
+/// PowerShell 单引号转义
 fn escape_ps(value: &str) -> String {
     value.trim_end_matches('\\').replace('\'', "''")
 }
 
+/// 把 {appDir}/{appBin}/{projectName} 换成实际路径
 fn fill_placeholders(script: &str, app_dir: &str, app_bin: &str, project_name: &str) -> String {
     script
         .replace("{appDir}", &escape_ps(app_dir))

@@ -1,3 +1,5 @@
+/** 部署任务状态：订阅 Rust 推送的 task-log / task-state / task-progress */
+
 import { onUnmounted, ref, type Ref } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { api } from "../api";

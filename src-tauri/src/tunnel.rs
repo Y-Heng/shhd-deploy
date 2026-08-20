@@ -1,3 +1,5 @@
+//! 本地端口转发隧道：经跳板机把远端端口映射到 127.0.0.1，断线自动重连。
+
 use crate::config::{self, AppConfig, TunnelConfig};
 use crate::ssh::{self, SshConnection};
 use anyhow::{Context, Result};

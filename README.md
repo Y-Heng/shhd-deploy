@@ -14,8 +14,17 @@
 
 ## MCP 接入（AI 直接调用部署）
 
-1. 「设置 → MCP 服务」开启开关，选择权限级别，保存。
-2. 把接入配置粘贴到 Cursor 的 `mcp.json`：
+本工具必须保持运行，MCP 才可用。服务只监听 `127.0.0.1`，不对局域网暴露；`list_config` 摘要不含密码或私钥。
+
+### 1. 在本工具里开启
+
+「设置 → MCP 服务」打开开关，选择权限级别，需要时再限制允许访问的目标，保存。状态应变为「运行中 · 127.0.0.1:端口」。
+
+默认端口 `17423`。绑定失败说明端口被占用，换一个后再改客户端配置。
+
+### 2. 写入 Cursor 的 mcp.json
+
+全局：`%USERPROFILE%\.cursor\mcp.json`；也可以写到项目 `.cursor\mcp.json`。保存后在 Cursor 里刷新 MCP（或重启 Cursor）。
 
 ```json
 {
@@ -25,14 +34,33 @@
 }
 ```
 
-3. 权限级别（DBX 风格分级，服务端强制执行）：
-   - **只读**：仅 `list_config` / `list_releases` / `get_task_status` / `list_tunnels`
-   - **仅中转（推荐）**：允许 `backend_deploy` / `frontend_deploy` 但强制 `mode=stage`（只传包不动线上，替换仍需人工在界面确认）
-   - **完全访问**：额外开放 `rollback` / `docker_deploy` / `tunnel_control` 与 full/replace 模式
-4. 还可以配置"允许访问的目标"白名单，只暴露指定的负载组/前端项目/Docker 目标。
-5. 服务只监听 `127.0.0.1`，不对局域网暴露；配置摘要不含任何密码凭据。
+### 3. 权限与工具（服务端强制执行）
 
-典型 AI 工作流：AI 执行本地构建/发布脚本 → `backend_deploy(mode=stage)` 上传中转 → `get_task_status(waitSeconds=60)` 轮询 → 人在软件「发布历史」里点「执行替换」。
+| 权限 | 可用工具 | 说明 |
+| --- | --- | --- |
+| 只读 | `list_config`、`list_releases`、`list_frontend_releases`、`get_task_status`、`list_tunnels` | 只能查询 |
+| 仅中转（推荐） | 上述查询 + `backend_deploy` / `frontend_deploy` | `mode` 只能是 `stage`，替换线上需人在「发布历史」点执行替换 |
+| 完全访问 | 额外 `rollback`、`frontend_rollback`、`docker_deploy`、`tunnel_control`，以及 `mode=full/replace` | 可改线上，谨慎开启 |
+
+工具要点：
+
+- **list_config**：拿负载组 / 项目 / 前端 / Docker 的 id。部署前先调。
+- **backend_deploy**：必填 `groupId`、`releaseName`（`yyyyMMdd-功能名`）。可选 `projectIds`、`mode`、`backupSibling`。返回 `taskId`。
+- **frontend_deploy**：必填 `targetIds`。可选 `mode`、`backupSibling`。
+- **get_task_status**：必填 `taskId`。建议 `waitSeconds=60` 轮询到 `success` / `failed` / `cancelled`（最长 300 秒）。
+- **list_releases / list_frontend_releases**：最近发布历史；回滚用 `releaseId`。
+- **rollback**：后端回滚，仅 `success` 记录可回滚。
+- **frontend_rollback**：前端回滚，需 `success` 且带 `backupSuffix`。
+- **docker_deploy**：按目标配置顺序执行命令。
+- **list_tunnels / tunnel_control**：查看或启停隧道。
+
+「指定目标」白名单：未勾选的组/项目一律禁止；空列表 = 全部禁止。`null`（所有目标）= 全部允许。
+
+### 4. 推荐 AI 工作流
+
+本地构建/发布脚本 → `list_config` → `backend_deploy(mode=stage)` 或 `frontend_deploy(mode=stage)` → `get_task_status(waitSeconds=60)` 轮询 → 人在软件「发布历史」点「执行替换」。
+
+示例提示词：「先跑本地发布脚本，再用 shhd-deploy 的 list_config 找到对应负载组和项目，调用 backend_deploy（mode=stage，releaseName=今天日期-本次功能名），用 get_task_status waitSeconds=60 轮询，把结果告诉我。不要替换线上。」
 
 ## 环境要求（开发机）
 
@@ -98,10 +126,10 @@ New-NetFirewallRule -Name sshd-lan -DisplayName 'OpenSSH Server (LAN only)' `
 
 ## 首次使用
 
-1. 启动后先到「服务器」页，把默认模板里的主机地址、密码补全（跳板机公网 IP、四台 Windows 内网 IP 已预填）。
-2. 每台服务器点一次「测试」确认连通。
-3. 「设置」页检查后端负载组的项目映射（本地 bin 目录 ↔ 服务器应用目录）与健康检查地址。
-4. 到「后端部署」页选组、勾项目、填功能名，开始部署。
+1. 启动后先到「服务器」页，把默认模板里的主机地址、密码补全（跳板机公网 IP、四台 Windows 内网 IP 已预填）。也可以让同事「设置 → 导出配置」，你再「导入配置」。
+2. 每台服务器点一次「测试」确认连通（第一次会记录主机指纹）。
+3. 「设置」页检查外观、MCP（如需 AI 接入）、诊断日志；「后端部署 → 项目配置」核对本机产物目录、服务器应用目录与健康检查地址。本地路径必须是你这台电脑上的实际目录。
+4. 到「后端部署」页选组、勾项目、填功能名，开始部署。软件内完整说明见「设置 → 使用说明」。
 
 ## 后端部署流程细节
 
@@ -116,3 +144,5 @@ New-NetFirewallRule -Name sshd-lan -DisplayName 'OpenSSH Server (LAN only)' `
 - 所有流量走 SSH 加密通道；Windows 服务器经 Linux 跳板访问，不暴露公网。
 - 主机密钥采用首次信任（TOFU），指纹变化会拒绝连接并提示，防中间人攻击。
 - 密码保存在本机 `%APPDATA%\shhd-deploy\config.json`，建议尽量改用私钥认证。
+- 诊断日志默认关闭，开启后写在 `%APPDATA%\shhd-deploy\logs\`。
+- MCP 只绑定本机回环地址；关掉本工具后 AI 客户端立即连不上。

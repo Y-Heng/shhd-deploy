@@ -1,3 +1,5 @@
+//! 前端部署：把本地 dist 打包上传到 nginx 目录，支持中转/替换与发布前快照回滚。
+
 use crate::config::{AppConfig, OsType};
 use crate::deploy_backend::DeployMode;
 use crate::events::TaskLogger;
@@ -46,6 +48,7 @@ pub struct FrontendReleaseRecord {
     pub message: String,
 }
 
+/// 读取前端发布历史
 pub fn load_frontend_releases() -> Vec<FrontendReleaseRecord> {
     let path = crate::config::frontend_releases_file_path();
     std::fs::read_to_string(path)

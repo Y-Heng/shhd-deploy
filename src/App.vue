@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** 主界面：侧栏切换各功能页；终端/前后端部署 keep-alive，其它页按需加载 */
 import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
 import {
   Platform,
@@ -30,6 +31,7 @@ const menus = [
   { key: "settings", label: "设置", icon: Setting, component: SettingsView },
 ];
 
+/** 切页时仍保留会话/部署进度的页面 */
 const keepAliveKeys = ["terminal", "frontend", "backend"];
 
 const activeKey = ref("servers");

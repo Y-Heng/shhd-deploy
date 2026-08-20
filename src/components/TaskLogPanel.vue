@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** 部署任务日志面板：进度条、滚动日志、取消按钮 */
 import { nextTick, ref, watch } from "vue";
 import type { LogLine } from "../composables/useTask";
 

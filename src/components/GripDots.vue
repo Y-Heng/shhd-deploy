@@ -1,3 +1,4 @@
+<!-- 拖拽排序手柄：两列圆点 -->
 <template>
   <span class="grip-dots" aria-hidden="true">
     <span v-for="dotIndex in 8" :key="dotIndex" class="grip-dot" />

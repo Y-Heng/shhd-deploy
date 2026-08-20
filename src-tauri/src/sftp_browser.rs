@@ -1,3 +1,5 @@
+//! SFTP 浏览与传输：按服务器缓存会话，上传可取消并推进度事件。
+
 use crate::config::AppConfig;
 use crate::ssh;
 use anyhow::{bail, Context, Result};

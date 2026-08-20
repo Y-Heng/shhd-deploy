@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** 隧道列表：本地端口转发、自动重连、分组拖拽 */
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { ArrowRight } from "@element-plus/icons-vue";

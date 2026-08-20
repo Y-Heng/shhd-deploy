@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Docker 部署：SSH 到 Linux 按顺序执行 compose 命令 */
 import { computed, nextTick, onMounted, reactive, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { ArrowRight, Folder } from "@element-plus/icons-vue";

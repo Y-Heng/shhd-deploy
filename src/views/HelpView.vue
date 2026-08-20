@@ -1,8 +1,8 @@
 <script setup lang="ts">
+/** 软件内使用说明；embedded 时嵌在设置弹窗里 */
 import { onMounted, ref } from 'vue'
 import { api } from '../api'
 
-// embedded 为 true 时隐藏大标题（嵌在设置弹窗里）
 const { embedded = false } = defineProps<{
   embedded?: boolean
 }>()
@@ -31,6 +31,7 @@ onMounted(async () => {
             <li>到「服务器」页，逐台点<b>「测试连接」</b>确认连通（第一次连接会自动记录服务器指纹）。</li>
             <li>确认配置里的<b>本地路径</b>（后端产物目录、前端 dist 目录）改成你自己电脑上的实际路径（「后端部署 → 项目配置」和「前端部署 → 编辑」里改）。主题在「设置 → 外观」，默认跟随系统。</li>
           </ol>
+          <p>需要 AI 接入时到「设置 → MCP 服务」开启；完整步骤见第七节。诊断日志、导入导出也在设置页。</p>
         </div>
       </el-collapse-item>
 
@@ -62,10 +63,12 @@ onMounted(async () => {
       <el-collapse-item title="四、SSH 终端 / SFTP / 远程桌面" name="terminal">
         <div class="help-body">
           <ul>
-            <li><b>SSH 终端</b>：选服务器 → 新建会话，支持多标签。连 Windows 服务器默认进 PowerShell（已关闭 PSReadLine，避免经跳板机输入闪烁、换盘后逐字换行）。若要 cmd，输入 <code>cmd</code> 回车即可。</li>
-            <li><b>SFTP 文件管理</b>：双栏浏览本地与远端；支持拖拽上传/下载；右键菜单可新建、重命名、删除、下载等。</li>
+            <li><b>SSH 终端</b>：选服务器 → 新建会话，支持多标签。连 Windows 服务器默认进 PowerShell（已关闭 PSReadLine，避免经跳板机输入闪烁、换盘后逐字换行）。若要 cmd，输入 <code>cmd</code> 回车即可。标签可弹出独立窗口，关掉弹出窗不会断开会话。</li>
+            <li><b>常用命令</b>：终端右侧「{}」打开片段栏，可分组保存常用命令，点一下即可写入当前会话。支持搜索、拖拽排序；命令随配置导入导出。</li>
+            <li><b>SFTP 文件管理</b>：双栏浏览本地与远端；支持拖拽上传/下载、框选、右键新建/重命名/删除。上传进度会在离开终端页时以浮动条显示，可随时取消。</li>
+            <li><b>快捷目录</b>：SFTP 顶部可添加公共快捷路径，也可给某台服务器单独加专属路径，方便反复进出同一目录。</li>
             <li><b>路径同步</b>：SSH 终端里 <code>cd</code> 切换目录后，同一会话的 SFTP 远端路径会跟着更新；在 SFTP 进入目录也会尽量与终端工作目录对齐。</li>
-            <li><b>远程桌面</b>：在「服务器」页 Windows 行点「远程桌面」。分辨率在编辑服务器时设置，连接时直接使用；经跳板机建隧道并拉起 mstsc。你只需在 mstsc 窗口输入 Windows 账号密码。</li>
+            <li><b>远程桌面</b>：在「服务器」页 Windows 行点「远程桌面」。分辨率在编辑服务器时设置，连接时直接使用；经跳板机建隧道并拉起 mstsc。你只需在 mstsc 窗口输入 Windows 账号密码。macOS 需先安装 App Store 的 Windows App。</li>
           </ul>
         </div>
       </el-collapse-item>
@@ -104,33 +107,56 @@ onMounted(async () => {
       <el-collapse-item title="七、AI 接入（MCP）" name="mcp">
         <div class="help-body">
           <p>
-            开启后，Cursor 等 AI 客户端可以直接调用本工具：AI 构建完包 → 调用
-            <code>backend_deploy</code>/<code>frontend_deploy</code> 上传部署 → 轮询 <code>get_task_status</code> 拿结果。
+            MCP 是给 AI 客户端用的本机接口。本工具必须<b>保持运行</b>，Cursor 等才能调用部署能力。
+            推荐节奏：AI 在本地构建/发布 → 调用本工具<b>仅上传中转</b> → 人在「发布历史」点「执行替换」。
           </p>
           <p><b>接入步骤：</b></p>
           <ol>
-            <li>「设置 → MCP 服务」打开开关，选权限级别，保存。</li>
-            <li>复制接入配置，粘贴到 Cursor 的 <code>mcp.json</code>：</li>
+            <li>「设置 → MCP 服务」打开开关，选权限级别（推荐「仅中转」），需要时再限制允许访问的目标，点保存。状态应变为「运行中」。</li>
+            <li>复制接入配置。Cursor 全局配置一般在 <code>%USERPROFILE%\.cursor\mcp.json</code>，也可以写到项目的 <code>.cursor\mcp.json</code>：</li>
           </ol>
           <pre class="help-code">
 {
   "mcpServers": {
     "shhd-deploy": { "url": "http://127.0.0.1:{{ mcpPort }}/mcp" }
   }
-}</pre
-          >
-          <p><b>权限级别：</b></p>
+}</pre>
+          <p>保存后在 Cursor 里刷新 MCP 服务器（或重启 Cursor）。改了监听端口后，<code>mcp.json</code> 里的端口要一起改。</p>
+          <p><b>权限与可用工具（服务端强制执行，AI 改不了）：</b></p>
           <ul>
-            <li><b>只读</b>：AI 只能查配置、发布历史、任务状态。</li>
-            <li><b>仅中转（推荐）</b>：AI 能传包到中转，但<b>替换线上必须人在软件里点</b>，兼顾效率与安全。</li>
-            <li><b>完全访问</b>：AI 可替换线上、回滚、Docker 部署，谨慎开启。</li>
+            <li><b>只读</b>：<code>list_config</code>、<code>list_releases</code>、<code>list_frontend_releases</code>、<code>get_task_status</code>、<code>list_tunnels</code>。不能部署。</li>
+            <li><b>仅中转（推荐）</b>：上述查询 + <code>backend_deploy</code> / <code>frontend_deploy</code>，但 <code>mode</code> 只能是 <code>stage</code>（只传到中转，不动线上）。</li>
+            <li><b>完全访问</b>：额外开放 <code>mode=full/replace</code>，以及 <code>rollback</code>、<code>frontend_rollback</code>、<code>docker_deploy</code>、<code>tunnel_control</code>。请谨慎开启。</li>
           </ul>
-          <p>示例提示词：「发布 client 项目并上传到中转：先执行发布脚本，然后用 shhd-deploy 的 backend_deploy（mode=stage，releaseName=今天日期-本次功能名），最后轮询任务结果告诉我。」</p>
-          <p class="help-note">服务只监听本机 127.0.0.1，局域网内其他电脑无法访问。</p>
+          <p><b>工具说明：</b></p>
+          <ul>
+            <li><code>list_config</code>：查看可部署目标（负载组/项目/前端/Docker/服务器），不含密码。部署前先调它拿 id。</li>
+            <li><code>backend_deploy</code>：必填 <code>groupId</code>、<code>releaseName</code>（格式 <code>yyyyMMdd-功能名</code>）。可选 <code>projectIds</code>、<code>mode</code>、<code>backupSibling</code>。返回 <code>taskId</code>。</li>
+            <li><code>frontend_deploy</code>：必填 <code>targetIds</code>。可选 <code>mode</code>、<code>backupSibling</code>。</li>
+            <li><code>get_task_status</code>：必填 <code>taskId</code>。建议 <code>waitSeconds=60</code> 轮询，直到 <code>state</code> 为 <code>success</code> / <code>failed</code> / <code>cancelled</code>（最长 300 秒）。</li>
+            <li><code>list_releases</code> / <code>list_frontend_releases</code>：最近发布历史；回滚用这里的 <code>releaseId</code>。</li>
+            <li><code>rollback</code> / <code>frontend_rollback</code>：回滚一次发布（需完全访问）。后端仅 <code>success</code> 可回滚；前端还需带 <code>backupSuffix</code>。</li>
+            <li><code>docker_deploy</code>：按目标配置顺序执行 compose 命令（需完全访问）。</li>
+            <li><code>list_tunnels</code> / <code>tunnel_control</code>：查看或启停隧道（启停需完全访问）。</li>
+          </ul>
+          <p><b>允许访问的目标：</b>选「所有目标」则配置里的组/项目都对 AI 可见。选「指定目标」后，下拉框里没勾选的一律禁止（空列表 = 全部禁止）。</p>
+          <p>示例提示词：「先跑本地发布脚本，再用 shhd-deploy 的 list_config 找到对应负载组和项目，调用 backend_deploy（mode=stage，releaseName=今天日期-本次功能名），用 get_task_status waitSeconds=60 轮询，把结果告诉我。不要替换线上。」</p>
+          <p class="help-note">服务只监听 127.0.0.1，局域网其他电脑无法访问。摘要不含密码或私钥。关掉本工具后 MCP 立即不可用。</p>
         </div>
       </el-collapse-item>
 
-      <el-collapse-item title="八、常见问题" name="faq">
+      <el-collapse-item title="八、设置（外观 / 配置迁移 / 诊断日志）" name="settings">
+        <div class="help-body">
+          <ul>
+            <li><b>外观</b>：跟随系统 / 浅色 / 深色，只保存在本机，不会随配置导出。</li>
+            <li><b>导出 / 导入配置</b>：换电脑或给同事时用。导入会覆盖当前全部配置（服务器、隧道、部署映射、常用命令）。导入后务必把本地路径改成这台电脑上的实际目录。</li>
+            <li><b>诊断日志</b>：默认关闭。排查问题时打开，日志在配置目录下的 <code>logs</code>。可「打开日志目录」或「复制最近日志」发给 AI 分析。不含 MCP 调用的密码，但仍可能有主机名、路径，分享前看一眼。</li>
+            <li>配置文件位置可在设置页复制。密码也写在这份 JSON 里，建议尽快改用私钥认证。</li>
+          </ul>
+        </div>
+      </el-collapse-item>
+
+      <el-collapse-item title="九、常见问题" name="faq">
         <div class="help-body">
           <ul>
             <li><b>连不上 Windows 服务器</b>：确认已开启 OpenSSH Server，且端口填的是 <b>22</b>（不是 RDP 的 3389）。管理员 PowerShell：<code>Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0</code> 后 <code>Start-Service sshd</code>。</li>
@@ -144,6 +170,10 @@ onMounted(async () => {
             <li><b>日期备份目录越积越多</b>：目前不自动清理，请定期手动删除服务器上的 <code>目录名-日期</code> 旧备份。</li>
             <li><b>换电脑</b>：旧电脑导出配置 → 新电脑导入，再把配置里的本地路径改成新电脑的路径。</li>
             <li><b>想改分组名</b>：在服务器 / 隧道 / Docker 部署页双击分组名称；「未分组」请通过编辑条目指定新分组。</li>
+            <li><b>Cursor 看不到 MCP 工具</b>：确认本工具正在运行且设置里 MCP 为「运行中」；<code>mcp.json</code> 端口与设置一致；在 Cursor 刷新 MCP。权限为只读时，部署类工具本来就不会出现。</li>
+            <li><b>MCP 提示端口绑定失败</b>：该端口被占用，在设置里换一个（1024–65535），保存后再改 <code>mcp.json</code>。</li>
+            <li><b>MCP 报不在允许范围内</b>：设置里选了「指定目标」但没勾对应负载组/前端/Docker，补选后保存。</li>
+            <li><b>MCP 报只能 stage</b>：当前是「仅中转」权限。替换线上请到软件「发布历史」点执行替换，或把权限改为完全访问。</li>
           </ul>
         </div>
       </el-collapse-item>

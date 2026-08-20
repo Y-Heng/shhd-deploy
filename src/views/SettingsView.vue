@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** 设置：外观、MCP、诊断日志、导入导出配置 */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
@@ -23,11 +24,13 @@ onMounted(async () => {
   await reloadConfig()
 })
 
+/** 旧配置可能没有 logging 字段 */
 function ensureLoggingConfig() {
   if (!config.value) return
   if (!config.value.logging) config.value.logging = { enabled: false, level: 'info' }
 }
 
+/** 从磁盘重载配置，并同步 MCP 运行状态 */
 async function reloadConfig() {
   config.value = await api.getConfig()
   ensureLoggingConfig()
@@ -38,9 +41,9 @@ async function reloadConfig() {
 }
 
 const permissionDescriptions: Record<string, string> = {
-  readonly: '仅允许查询配置、发布历史、任务状态、隧道状态，不能发起任何部署。',
-  stage: '允许把构建产物上传到中转目录（后端含同步备机），但不允许替换线上、回滚、Docker 部署。线上替换仍需人在软件里确认，推荐给 AI 用。',
-  full: '允许全部操作：替换线上、回滚、Docker 部署、隧道启停。请谨慎开启。'
+  readonly: '仅查询：list_config / list_releases / list_frontend_releases / get_task_status / list_tunnels，不能发起任何部署。',
+  stage: '允许 backend_deploy / frontend_deploy，但 mode 只能是 stage（传到中转，不动线上）。替换、回滚、Docker、隧道启停仍需人在软件里操作。推荐给 AI 用。',
+  full: '允许 full/replace 模式，以及 rollback / frontend_rollback / docker_deploy / tunnel_control。可改线上，请谨慎开启。'
 }
 
 const mcpJsonSnippet = computed(() => {
@@ -56,6 +59,7 @@ const mcpJsonSnippet = computed(() => {
   )
 })
 
+/** 保存 MCP：白名单 null=全部允许，[]=全部禁止 */
 async function saveMcpSettings() {
   if (!config.value) return
   const mcp = config.value.mcp
@@ -76,11 +80,13 @@ async function saveMcpSettings() {
   ElMessage.success('MCP 设置已保存并生效')
 }
 
+/** 复制 Cursor mcp.json 片段 */
 async function copyMcpSnippet() {
   await navigator.clipboard.writeText(mcpJsonSnippet.value)
-  ElMessage.success('已复制，粘贴到 Cursor 的 mcp.json 即可')
+  ElMessage.success('已复制，粘贴到 Cursor 的 mcp.json 即可（全局一般在 %USERPROFILE%\\.cursor\\mcp.json）')
 }
 
+/** 保存下方原始 JSON 编辑框（会覆盖全部配置） */
 async function saveConfigText() {
   try {
     const parsed = JSON.parse(configText.value)
@@ -92,6 +98,7 @@ async function saveConfigText() {
   }
 }
 
+/** 导出当前配置到用户选择的文件 */
 async function exportConfigFile() {
   const targetPath = await saveDialog({
     title: '导出配置',
@@ -107,6 +114,7 @@ async function exportConfigFile() {
   }
 }
 
+/** 导入配置：覆盖服务器、隧道、部署映射等全部内容 */
 async function importConfigFile() {
   const sourcePath = await openDialog({
     title: '导入配置',
@@ -124,11 +132,13 @@ async function importConfigFile() {
   }
 }
 
+/** 复制配置文件路径 */
 async function copyPath() {
   await navigator.clipboard.writeText(configPath.value)
   ElMessage.success('路径已复制')
 }
 
+/** 保存诊断日志开关 */
 async function saveLoggingSettings() {
   if (!config.value?.logging) return
   await api.setLoggingEnabled(config.value.logging.enabled)
@@ -136,6 +146,7 @@ async function saveLoggingSettings() {
   ElMessage.success('诊断日志设置已保存')
 }
 
+/** 用资源管理器打开日志目录 */
 async function openLogDirectory() {
   try {
     await api.openLogDir()
@@ -144,6 +155,7 @@ async function openLogDirectory() {
   }
 }
 
+/** 复制当日日志末尾 200 行，便于发给 AI 分析 */
 async function copyRecentLogs() {
   try {
     const text = await api.readRecentLogs(200)
@@ -203,10 +215,11 @@ async function copyRecentLogs() {
       <el-form label-width="130px">
         <el-form-item label="启用 MCP 服务">
           <el-switch v-model="config.mcp.enabled" />
-          <span class="form-hint"> 只监听本机 127.0.0.1，AI（如 Cursor）构建完包后可直接调用本工具发起部署 </span>
+          <span class="form-hint"> 只监听本机 127.0.0.1。本工具必须保持运行，Cursor 等才能调用。保存后若 Cursor 看不到工具，请刷新 MCP。 </span>
         </el-form-item>
         <el-form-item label="监听端口">
           <el-input-number v-model="config.mcp.port" :min="1024" :max="65535" />
+          <span class="form-hint">绑定失败说明端口被占用，换一个后同步改 mcp.json</span>
         </el-form-item>
         <el-form-item label="执行权限">
           <div style="width: 100%">
@@ -226,6 +239,9 @@ async function copyRecentLogs() {
               <el-radio-button value="all">所有目标</el-radio-button>
               <el-radio-button value="custom">指定目标</el-radio-button>
             </el-radio-group>
+            <div class="form-hint" style="margin-top: 6px">
+              「指定目标」时未勾选的一律禁止；下拉框留空等于全部禁止。
+            </div>
             <template v-if="targetScope === 'custom'">
               <div class="scope-row">
                 <span class="scope-label">后端负载组</span>
@@ -251,7 +267,10 @@ async function copyRecentLogs() {
         <el-form-item label="客户端接入配置">
           <div style="width: 100%">
             <pre class="mcp-snippet">{{ mcpJsonSnippet }}</pre>
-            <el-button size="small" @click="copyMcpSnippet"> 复制（粘贴到 Cursor 的 mcp.json） </el-button>
+            <el-button size="small" @click="copyMcpSnippet"> 复制（粘贴到 %USERPROFILE%\.cursor\mcp.json） </el-button>
+            <div class="form-hint" style="margin-top: 6px">
+              也可写到项目 <code>.cursor\mcp.json</code>。改端口后两边都要改。完整工具说明见「使用说明 → AI 接入」。
+            </div>
           </div>
         </el-form-item>
         <el-form-item>

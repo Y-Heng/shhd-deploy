@@ -1,3 +1,5 @@
+//! 本机文件系统浏览：磁盘列表与目录列举，供 SFTP 左栏使用。
+
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use std::fs;

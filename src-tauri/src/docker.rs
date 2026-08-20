@@ -1,3 +1,5 @@
+//! Docker 部署：SSH 到 Linux 服务器，在工作目录按顺序执行配置的命令。
+
 use crate::config::AppConfig;
 use crate::events::TaskLogger;
 use crate::ssh;

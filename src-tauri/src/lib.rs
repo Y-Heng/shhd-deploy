@@ -1,3 +1,5 @@
+//! KurumiDeploy 后端入口：注册 Tauri 命令，编排配置、隧道、终端、部署任务与 MCP。
+
 mod config;
 mod deploy_backend;
 mod deploy_frontend;
@@ -48,11 +50,13 @@ pub struct AppState {
     pub mcp: Arc<mcp::McpManager>,
 }
 
+/// 读取当前内存中的完整配置
 #[tauri::command]
 async fn get_config(state: State<'_, AppState>) -> Result<AppConfig, String> {
     Ok(state.config.read().await.clone())
 }
 
+/// 保存配置到磁盘并热更新内存；MCP 开关/端口变化会在这里重新应用
 #[tauri::command]
 async fn save_config(
     app: AppHandle,
@@ -71,6 +75,7 @@ async fn save_config(
     Ok(())
 }
 
+/// 配置文件绝对路径（供设置页展示/复制）
 #[tauri::command]
 fn get_config_path() -> String {
     config::config_file_path().to_string_lossy().to_string()
@@ -148,6 +153,7 @@ async fn persist_detected_os(
     Ok(())
 }
 
+/// SSH 探测：握手 + 识别系统类型，可选写回 detected_os
 async fn probe_server(
     state: &State<'_, AppState>,
     config: &config::AppConfig,
@@ -186,6 +192,7 @@ async fn probe_server(
     ))
 }
 
+/// 启动一条配置里的隧道；配置错误只记日志，状态走隧道卡片
 #[tauri::command]
 async fn start_tunnel(
     app: AppHandle,
@@ -201,12 +208,14 @@ async fn start_tunnel(
     Ok(())
 }
 
+/// 停止指定隧道
 #[tauri::command]
 async fn stop_tunnel(state: State<'_, AppState>, tunnel_id: String) -> Result<(), String> {
     state.tunnels.stop(&tunnel_id).await;
     Ok(())
 }
 
+/// 返回全部隧道的运行状态快照
 #[tauri::command]
 async fn tunnel_status(state: State<'_, AppState>) -> Result<Vec<TunnelStatusInfo>, String> {
     let config = state.config.read().await.clone();
@@ -338,6 +347,7 @@ pub(crate) async fn launch_docker_deploy(app: &AppHandle, target_id: String) -> 
     task_id
 }
 
+/// 预览本次后端打包会带上哪些文件（含忽略/过期标记）
 #[tauri::command]
 async fn preview_backend_pack(
     state: State<'_, AppState>,
@@ -354,6 +364,7 @@ async fn preview_backend_pack(
     .map_err(|error| format!("{:#}", error))
 }
 
+/// 从前端发起后端部署，返回 taskId 供日志面板订阅
 #[tauri::command]
 async fn start_backend_deploy(
     app: AppHandle,
@@ -362,21 +373,25 @@ async fn start_backend_deploy(
     Ok(launch_backend_deploy(&app, request).await)
 }
 
+/// 从前端发起后端回滚
 #[tauri::command]
 async fn start_rollback(app: AppHandle, release_id: String) -> Result<String, String> {
     Ok(launch_rollback(&app, release_id).await)
 }
 
+/// 读取后端发布历史
 #[tauri::command]
 fn get_releases() -> Vec<ReleaseRecord> {
     deploy_backend::load_releases()
 }
 
+/// 读取前端发布历史
 #[tauri::command]
 fn get_frontend_releases() -> Vec<FrontendReleaseRecord> {
     deploy_frontend::load_frontend_releases()
 }
 
+/// 从前端发起前端部署
 #[tauri::command]
 async fn start_frontend_deploy(
     app: AppHandle,
@@ -386,16 +401,19 @@ async fn start_frontend_deploy(
     Ok(launch_frontend_deploy(&app, target_ids, options).await)
 }
 
+/// 从前端发起前端回滚
 #[tauri::command]
 async fn start_frontend_rollback(app: AppHandle, release_id: String) -> Result<String, String> {
     Ok(launch_frontend_rollback(&app, release_id).await)
 }
 
+/// 从前端发起 Docker 部署
 #[tauri::command]
 async fn start_docker_deploy(app: AppHandle, target_id: String) -> Result<String, String> {
     Ok(launch_docker_deploy(&app, target_id).await)
 }
 
+/// 取消仍在运行的后台任务
 #[tauri::command]
 async fn cancel_task(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
     if let Some(token) = state.tasks.lock().await.get(&task_id) {
@@ -454,6 +472,7 @@ async fn terminal_open(
     Ok(session_id)
 }
 
+/// 把用户输入写入指定终端会话
 #[tauri::command]
 async fn terminal_write(
     state: State<'_, AppState>,
@@ -464,6 +483,7 @@ async fn terminal_write(
     Ok(())
 }
 
+/// 调整终端 PTY 行列
 #[tauri::command]
 async fn terminal_resize(
     state: State<'_, AppState>,
@@ -475,27 +495,32 @@ async fn terminal_resize(
     Ok(())
 }
 
+/// 关闭终端会话
 #[tauri::command]
 async fn terminal_close(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
     state.terminals.close(&session_id).await;
     Ok(())
 }
 
+/// 本机用户主目录
 #[tauri::command]
 fn get_home_dir() -> Result<String, String> {
     local_fs::get_home_dir().map_err(|error| format!("{:#}", error))
 }
 
+/// 本机磁盘列表（SFTP 左栏根）
 #[tauri::command]
 fn list_local_drives() -> Result<Vec<local_fs::LocalDirEntry>, String> {
     local_fs::list_local_drives().map_err(|error| format!("{:#}", error))
 }
 
+/// 列举本机目录
 #[tauri::command]
 fn list_local_dir(path: String) -> Result<Vec<local_fs::LocalDirEntry>, String> {
     local_fs::list_local_dir(&path).map_err(|error| format!("{:#}", error))
 }
 
+/// 列举远端 SFTP 目录
 #[tauri::command]
 async fn sftp_list(
     state: State<'_, AppState>,
@@ -508,6 +533,7 @@ async fn sftp_list(
         .map_err(|error| map_sftp_error("list", &server_id, &path, error))
 }
 
+/// 上传单个本地文件到远端
 #[tauri::command]
 async fn sftp_upload(
     app: AppHandle,
@@ -534,11 +560,13 @@ async fn sftp_upload(
     .map_err(|error| map_sftp_error("upload", &server_id, &remote_path, error))
 }
 
+/// 请求取消正在进行的上传批次
 #[tauri::command]
 fn sftp_cancel_upload(transfer_id: String) {
     sftp_browser::request_cancel(&transfer_id);
 }
 
+/// 收集本地目录下全部文件（保持相对路径，供整夹上传）
 #[tauri::command]
 fn sftp_collect_local_files(
     directory: String,
@@ -546,11 +574,13 @@ fn sftp_collect_local_files(
     sftp_browser::collect_local_files(&directory).map_err(|error| format!("{:#}", error))
 }
 
+/// 断开并丢弃该服务器缓存的 SFTP 会话
 #[tauri::command]
 async fn sftp_disconnect(server_id: String) {
     sftp_browser::disconnect(&server_id).await;
 }
 
+/// 从远端下载文件到本地
 #[tauri::command]
 async fn sftp_download(
     state: State<'_, AppState>,
@@ -564,6 +594,7 @@ async fn sftp_download(
         .map_err(|error| map_sftp_error("download", &server_id, &remote_path, error))
 }
 
+/// 在远端创建目录
 #[tauri::command]
 async fn sftp_mkdir(
     state: State<'_, AppState>,
@@ -576,6 +607,7 @@ async fn sftp_mkdir(
         .map_err(|error| map_sftp_error("mkdir", &server_id, &path, error))
 }
 
+/// 删除远端文件或目录
 #[tauri::command]
 async fn sftp_remove(
     state: State<'_, AppState>,
@@ -588,6 +620,7 @@ async fn sftp_remove(
         .map_err(|error| map_sftp_error("remove", &server_id, &path, error))
 }
 
+/// 重命名远端路径
 #[tauri::command]
 async fn sftp_rename(
     state: State<'_, AppState>,
@@ -603,16 +636,19 @@ async fn sftp_rename(
         })
 }
 
+/// 当日日志文件路径
 #[tauri::command]
 fn get_log_path() -> String {
     logger::current_log_path().to_string_lossy().to_string()
 }
 
+/// 诊断日志目录
 #[tauri::command]
 fn get_log_dir() -> String {
     logger::log_dir().to_string_lossy().to_string()
 }
 
+/// 开关诊断日志并写回配置
 #[tauri::command]
 async fn set_logging_enabled(
     state: State<'_, AppState>,
@@ -629,11 +665,13 @@ async fn set_logging_enabled(
     Ok(())
 }
 
+/// 用资源管理器打开日志目录
 #[tauri::command]
 fn open_log_dir() -> Result<(), String> {
     logger::open_log_dir().map_err(|error| error.to_string())
 }
 
+/// 读取当日日志末尾若干行
 #[tauri::command]
 fn read_recent_logs(max_lines: Option<usize>) -> Result<String, String> {
     logger::read_recent_logs(max_lines.unwrap_or(200)).map_err(|error| error.to_string())
@@ -800,6 +838,7 @@ async fn open_rdp(
     Ok(address)
 }
 
+/// 启动桌面应用：加载配置、注册命令、自启隧道与 MCP
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app_config = config::load_or_init().unwrap_or_default();

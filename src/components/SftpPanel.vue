@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** 双栏 SFTP：本地/远端浏览、拖拽传输、快捷目录 */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { TableInstance } from 'element-plus'

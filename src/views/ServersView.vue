@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** 服务器列表：分组、连通测试、一键远程桌面、拖拽排序 */
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { ArrowRight, Folder } from "@element-plus/icons-vue";

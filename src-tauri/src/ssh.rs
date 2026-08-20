@@ -1,3 +1,5 @@
+//! SSH 连接、跳板、命令执行与 SFTP 辅助。主机密钥采用 TOFU（首次信任）。
+
 use crate::config::{AppConfig, AuthConfig, OsType, ServerConfig};
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
@@ -97,6 +99,7 @@ pub fn describe_route(config: &AppConfig, server: &ServerConfig) -> String {
     }
 }
 
+/// 已建立连接时的路径说明
 pub fn describe_connection(conn: &SshConnection) -> String {
     match &conn.jump_server {
         Some(jump) => format!(
@@ -284,6 +287,7 @@ async fn connect_inner(config: &AppConfig, server_id: &str, depth: u8) -> Result
     })
 }
 
+/// 远程命令执行结果
 pub struct ExecOutput {
     pub exit_code: u32,
     pub stdout: String,
@@ -344,6 +348,7 @@ pub async fn exec(
     exec_on(&conn.handle, command, on_line).await
 }
 
+/// 在指定 SSH 句柄上执行命令（可用于跳板机本身）
 pub async fn exec_on(
     handle: &Handle<SshHandler>,
     command: &str,
@@ -472,6 +477,7 @@ pub async fn open_sftp(conn: &SshConnection) -> Result<russh_sftp::client::SftpS
     open_sftp_handle(&conn.handle, conn.server.os).await
 }
 
+/// 在已有会话句柄上打开 SFTP（可指向跳板机）
 pub async fn open_sftp_handle(
     handle: &Handle<SshHandler>,
     os: OsType,
@@ -541,6 +547,7 @@ fn windows_sftp_abs(path: &str) -> String {
     }
 }
 
+/// 跳板机临时目录上的中转包，用完后应 cleanup
 pub struct JumpStagedPayload {
     work_dir: String,
     payload_path: String,
@@ -697,6 +704,7 @@ sftp -oPreferredAuthentications=password -oPubkeyAuthentication=no \
     Ok(())
 }
 
+/// 删除跳板机上的中转临时目录（失败忽略）
 pub async fn cleanup_jump_payload(conn: &SshConnection, staging: &JumpStagedPayload) {
     if let Some(jump_handle) = conn.nearest_jump_handle() {
         let _ = exec_on(

@@ -1,3 +1,6 @@
+//! 本机 MCP 服务：给 Cursor 等 AI 客户端调用部署能力。
+//! 只绑定 127.0.0.1；权限与白名单在服务端强制执行，客户端改不了。
+
 use crate::config::{AppConfig, McpPermission};
 use crate::deploy_backend::{self, BackendDeployRequest, DeployMode};
 use crate::deploy_frontend::FrontendDeployOptions;
@@ -50,6 +53,7 @@ impl McpManager {
     }
 }
 
+/// 在 127.0.0.1:port 启动 Streamable HTTP，取消 token 后优雅退出
 async fn start_server(app: AppHandle, port: u16, token: CancellationToken) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
         .await
@@ -70,6 +74,7 @@ async fn handle_mcp_get() -> impl IntoResponse {
     StatusCode::METHOD_NOT_ALLOWED
 }
 
+/// JSON-RPC 错误（code 与 MCP/JSON-RPC 约定一致，如 -32601 表示方法不存在）
 struct RpcError {
     code: i64,
     message: String,
@@ -111,6 +116,7 @@ async fn handle_mcp_post(
     Json(body).into_response()
 }
 
+/// 分发 JSON-RPC 方法：握手、心跳、列工具、调工具
 async fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<Value, RpcError> {
     match method {
         "initialize" => {
@@ -123,7 +129,7 @@ async fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<Value,
                 "protocolVersion": protocol_version,
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": "shhd-deploy", "version": "0.1.0" },
-                "instructions": "部署工具 MCP 服务。典型流程：1) list_config 查看可部署目标；2) 本地构建/发布产物；3) backend_deploy 或 frontend_deploy 发起部署（mode=stage 仅上传中转，不动线上）；4) get_task_status 轮询任务进度直到 success/failed。部署工具返回 taskId，务必轮询确认结果。"
+                "instructions": "部署工具 MCP 服务。本工具必须保持运行。推荐流程：1) list_config 查看可部署目标与当前权限；2) 本地构建/发布，确保 localBinDir、localDir 已有最新产物；3) backend_deploy 或 frontend_deploy（默认 mode=stage，只传到中转，不动线上）；4) get_task_status(taskId, waitSeconds=60) 轮询直到 success/failed/cancelled。仅中转权限下替换线上必须由人在软件「发布历史」点执行替换。releaseName 格式 yyyyMMdd-功能名。"
             }))
         }
         "ping" => Ok(json!({})),
@@ -153,33 +159,55 @@ async fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<Value,
     }
 }
 
+/// 当前配置里的 MCP 权限（每次调用实时读取，改权限无需重启服务）
 async fn current_permission(app: &AppHandle) -> McpPermission {
     let state: tauri::State<AppState> = app.state();
     let config = state.config.read().await;
     config.mcp.permission
 }
 
-/// 按权限级别返回可用工具清单
+/// 按权限级别返回可用工具清单（只读工具始终可见；写操作按级别裁剪）
 fn tool_definitions(permission: McpPermission) -> Vec<Value> {
+    let read_only = json!({
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+    });
+    let write_stage = json!({
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+    });
+    let write_destructive = json!({
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+    });
     let mut tools = vec![
         json!({
             "name": "list_config",
-            "description": "查看可部署目标：后端负载组及项目、前端部署目标、Docker 目标、隧道（不含任何密码凭据）。发起部署前先调用它获取 id。",
-            "inputSchema": { "type": "object", "properties": {} }
+            "description": "查看可部署目标：后端负载组及项目、前端部署目标、Docker 目标、服务器列表（不含任何密码凭据）。发起部署前先调用它获取 groupId / projectId / targetId。返回里的 permission 表示当前 MCP 权限。",
+            "inputSchema": { "type": "object", "properties": {} },
+            "annotations": read_only.clone()
         }),
         json!({
             "name": "list_releases",
-            "description": "查看最近的后端发布历史，包含待替换(staged)、成功(success)、已回滚(rolled_back)、回滚完成(rollback)、失败(failed)状态。",
-            "inputSchema": { "type": "object", "properties": {} }
+            "description": "查看最近的后端发布历史。status：staged=待替换，success=已替换可回滚，rolled_back=已回滚，rollback=回滚完成记录，failed=失败。回滚请用 success 记录的 releaseId 调 rollback。",
+            "inputSchema": { "type": "object", "properties": {} },
+            "annotations": read_only.clone()
         }),
         json!({
             "name": "list_frontend_releases",
-            "description": "查看最近的前端发布历史。status 为 success 且带 backupSuffix 的记录可回滚。",
-            "inputSchema": { "type": "object", "properties": {} }
+            "description": "查看最近的前端发布历史。status 为 success 且带 backupSuffix 的记录可调 frontend_rollback。",
+            "inputSchema": { "type": "object", "properties": {} },
+            "annotations": read_only.clone()
         }),
         json!({
             "name": "get_task_status",
-            "description": "查询部署任务状态与日志。waitSeconds>0 时会阻塞等待任务结束或超时（最长 300 秒），建议部署后用 waitSeconds=60 轮询。",
+            "description": "查询部署任务状态与最近日志。deploy 类工具返回 taskId 后必须轮询本工具，不要把启动成功当成部署成功。waitSeconds>0 时阻塞等待任务结束或超时（最长 300 秒），建议 waitSeconds=60。state 为 success/failed/cancelled 时结束。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -187,12 +215,14 @@ fn tool_definitions(permission: McpPermission) -> Vec<Value> {
                     "waitSeconds": { "type": "integer", "description": "等待秒数，0 表示立即返回", "default": 0 }
                 },
                 "required": ["taskId"]
-            }
+            },
+            "annotations": read_only.clone()
         }),
         json!({
             "name": "list_tunnels",
-            "description": "查看所有隧道配置与当前运行状态。",
-            "inputSchema": { "type": "object", "properties": {} }
+            "description": "查看所有隧道配置与当前运行状态（stopped/connecting/active/reconnecting/error）。启停请用 tunnel_control（需完全访问）。",
+            "inputSchema": { "type": "object", "properties": {} },
+            "annotations": read_only.clone()
         }),
     ];
 
@@ -204,7 +234,7 @@ fn tool_definitions(permission: McpPermission) -> Vec<Value> {
         };
         tools.push(json!({
             "name": "backend_deploy",
-            "description": format!("后端部署：把本地发布产物部署到 Windows 负载组。{}", mode_hint),
+            "description": format!("后端部署：把本地发布产物部署到 Windows 负载组。{} 必填 groupId、releaseName（yyyyMMdd-功能名）。返回 taskId 后必须用 get_task_status 轮询，不要把启动成功当成部署成功。", mode_hint),
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -215,11 +245,12 @@ fn tool_definitions(permission: McpPermission) -> Vec<Value> {
                     "backupSibling": { "type": "boolean", "description": "替换前把应用目录备份为 目录名-日期", "default": true }
                 },
                 "required": ["groupId", "releaseName"]
-            }
+            },
+            "annotations": write_stage.clone()
         }));
         tools.push(json!({
             "name": "frontend_deploy",
-            "description": format!("前端部署：把本地构建产物打包上传到 nginx 服务器后解压。{}", mode_hint),
+            "description": format!("前端部署：把本地构建产物打包上传到 nginx 服务器后解压。{} 必填 targetIds。返回 taskId 后必须用 get_task_status 轮询。", mode_hint),
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -228,55 +259,61 @@ fn tool_definitions(permission: McpPermission) -> Vec<Value> {
                     "backupSibling": { "type": "boolean", "description": "替换前备份线上目录，供回滚", "default": true }
                 },
                 "required": ["targetIds"]
-            }
+            },
+            "annotations": write_stage.clone()
         }));
     }
 
     if permission == McpPermission::Full {
         tools.push(json!({
             "name": "rollback",
-            "description": "回滚一次后端发布：停止 IIS 后恢复替换前备份的 bin 并做健康检查。releaseId 从 list_releases 获取（仅 success 状态可回滚）。",
+            "description": "回滚一次后端发布：执行停止脚本后恢复替换前备份的目录并做健康检查。releaseId 从 list_releases 获取（仅 success 状态可回滚）。返回 taskId，请用 get_task_status 轮询。",
             "inputSchema": {
                 "type": "object",
-                "properties": { "releaseId": { "type": "string" } },
+                "properties": { "releaseId": { "type": "string", "description": "list_releases 返回的发布 ID" } },
                 "required": ["releaseId"]
-            }
+            },
+            "annotations": write_destructive.clone()
         }));
         tools.push(json!({
             "name": "frontend_rollback",
-            "description": "回滚一次前端发布：把线上静态目录恢复为该次发布前的快照。releaseId 从 list_frontend_releases 获取（仅 success 且带 backupSuffix 可回滚）。",
+            "description": "回滚一次前端发布：把线上静态目录恢复为该次发布前的快照。releaseId 从 list_frontend_releases 获取（仅 success 且带 backupSuffix 可回滚）。返回 taskId，请用 get_task_status 轮询。",
             "inputSchema": {
                 "type": "object",
-                "properties": { "releaseId": { "type": "string" } },
+                "properties": { "releaseId": { "type": "string", "description": "list_frontend_releases 返回的发布 ID" } },
                 "required": ["releaseId"]
-            }
+            },
+            "annotations": write_destructive.clone()
         }));
         tools.push(json!({
             "name": "docker_deploy",
-            "description": "在 Linux 服务器上按顺序执行 Docker 目标配置的命令（如 compose pull/up）。",
+            "description": "在 Linux 服务器上按顺序执行 Docker 目标配置的命令（如 compose pull/up）。targetId 从 list_config 获取。返回 taskId，请用 get_task_status 轮询。",
             "inputSchema": {
                 "type": "object",
-                "properties": { "targetId": { "type": "string" } },
+                "properties": { "targetId": { "type": "string", "description": "Docker 目标 id（list_config 获取）" } },
                 "required": ["targetId"]
-            }
+            },
+            "annotations": write_destructive.clone()
         }));
         tools.push(json!({
             "name": "tunnel_control",
-            "description": "启动或停止一条隧道。",
+            "description": "启动或停止一条隧道。tunnelId 从 list_tunnels 获取。action 只能是 start 或 stop。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "tunnelId": { "type": "string" },
+                    "tunnelId": { "type": "string", "description": "隧道 id（list_tunnels 获取）" },
                     "action": { "type": "string", "enum": ["start", "stop"] }
                 },
                 "required": ["tunnelId", "action"]
-            }
+            },
+            "annotations": write_stage.clone()
         }));
     }
 
     tools
 }
 
+/// 从 JSON-RPC params 读取字符串参数
 fn arg_str(arguments: &Value, key: &str) -> Option<String> {
     arguments
         .get(key)
@@ -284,6 +321,7 @@ fn arg_str(arguments: &Value, key: &str) -> Option<String> {
         .map(|text| text.to_string())
 }
 
+/// 从 JSON-RPC params 读取字符串数组，缺省或类型不对时返回空列表
 fn arg_str_list(arguments: &Value, key: &str) -> Vec<String> {
     arguments
         .get(key)
@@ -305,6 +343,7 @@ fn is_allowed(allowlist: &Option<Vec<String>>, id: &str) -> bool {
     }
 }
 
+/// 按工具名执行，并再次校验权限与白名单（tools/list 只是展示，真正拦截在这里）
 async fn call_tool(app: &AppHandle, tool_name: &str, arguments: Value) -> Result<String, String> {
     let (config, permission) = {
         let state: tauri::State<AppState> = app.state();

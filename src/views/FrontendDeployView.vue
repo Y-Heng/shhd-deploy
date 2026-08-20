@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** 前端静态资源部署：按开发/正式环境分组，支持中转、替换与回滚 */
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";

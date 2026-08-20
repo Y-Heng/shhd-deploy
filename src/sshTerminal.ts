@@ -1,7 +1,10 @@
+/** xterm 主题与弹出窗 hash 解析（#/popout-term?sessionId=...） */
+
 import { markRaw } from "vue";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 
+/** 创建带 FitAddon 的 xterm 实例（主窗口与弹出窗共用主题） */
 export function createSshTerminal() {
   const terminal = markRaw(
     new Terminal({
@@ -45,6 +48,7 @@ export function createSshTerminal() {
   return { terminal, fitAddon };
 }
 
+/** 从 URL hash 解析独立终端窗口参数；不是弹出窗则返回 null */
 export function parsePopoutHash() {
   const raw = window.location.hash || "";
   if (!raw.startsWith("#/popout-term")) return null;

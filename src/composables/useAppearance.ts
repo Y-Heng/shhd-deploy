@@ -1,3 +1,5 @@
+/** 外观主题：跟随系统 / 浅色 / 深色，只存在本机 localStorage */
+
 import { ref } from "vue";
 
 export type AppearanceMode = "system" | "light" | "dark";

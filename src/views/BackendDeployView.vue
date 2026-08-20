@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** 后端部署：中转/替换/回滚、打包预览、项目配置与发布历史 */
 import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";

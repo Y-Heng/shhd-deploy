@@ -1,3 +1,5 @@
+//! 任务日志与进度：推到前端事件，同时写入内存注册表供 MCP 查询。
+
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -21,6 +23,7 @@ pub struct TaskRegistry {
 }
 
 impl TaskRegistry {
+    /// 登记一个 running 任务，超出 50 个时丢掉最旧的
     pub fn init(&self, task_id: &str) {
         let mut guard = self.inner.lock().unwrap();
         let (map, order) = &mut *guard;
@@ -46,6 +49,7 @@ impl TaskRegistry {
         }
     }
 
+    /// 追加一行带时间戳的任务日志，单任务最多保留约 500 行
     pub fn append_log(&self, task_id: &str, level: &str, message: &str) {
         let line = format!(
             "[{}][{}] {}",
@@ -62,6 +66,7 @@ impl TaskRegistry {
         });
     }
 
+    /// 写入任务终态或中间状态
     pub fn set_state(&self, task_id: &str, state: &str, message: &str) {
         let state_owned = state.to_string();
         let message_owned = message.to_string();
@@ -71,6 +76,7 @@ impl TaskRegistry {
         });
     }
 
+    /// 写入进度百分比与当前步骤文案
     pub fn set_progress(&self, task_id: &str, percent: f64, step: &str) {
         let step_owned = step.to_string();
         self.update(task_id, |snapshot| {
@@ -79,6 +85,7 @@ impl TaskRegistry {
         });
     }
 
+    /// 复制一份当前快照；任务不存在则 None
     pub fn snapshot(&self, task_id: &str) -> Option<TaskSnapshot> {
         self.inner.lock().unwrap().0.get(task_id).cloned()
     }
@@ -141,18 +148,22 @@ impl TaskLogger {
         let _ = self.app.emit("task-log", payload);
     }
 
+    /// 普通信息日志
     pub fn info(&self, message: impl Into<String>) {
         self.emit_log("info", message.into());
     }
 
+    /// 警告
     pub fn warn(&self, message: impl Into<String>) {
         self.emit_log("warn", message.into());
     }
 
+    /// 错误
     pub fn error(&self, message: impl Into<String>) {
         self.emit_log("error", message.into());
     }
 
+    /// 成功步骤
     pub fn success(&self, message: impl Into<String>) {
         self.emit_log("success", message.into());
     }

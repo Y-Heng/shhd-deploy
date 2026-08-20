@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** SSH 终端独立窗口：复用同一会话，可切 SFTP */
 import { nextTick, onMounted, onUnmounted, ref } from "vue";
 import { ElMessage } from "element-plus";
 import { Close } from "@element-plus/icons-vue";
