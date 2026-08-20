@@ -7,8 +7,9 @@ import "./styles/theme.css";
 import App from "./App.vue";
 import TermPopout from "./views/TermPopout.vue";
 import { parsePopoutHash } from "./sshTerminal";
+import { initAppearance } from "./composables/useAppearance";
 
-document.documentElement.classList.add("dark");
+initAppearance();
 
 const popout = parsePopoutHash();
 const app = popout

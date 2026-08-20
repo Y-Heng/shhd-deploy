@@ -5,6 +5,9 @@ import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialo
 import { api } from '../api'
 import type { AppConfig } from '../types'
 import HelpView from './HelpView.vue'
+import { useAppearance } from '../composables/useAppearance'
+
+const { appearanceMode, setAppearance } = useAppearance()
 
 const configPath = ref('')
 const configText = ref('')
@@ -173,6 +176,22 @@ async function copyRecentLogs() {
       </div>
     </el-dialog>
 
+    <el-card class="appearance-card" shadow="never">
+      <template #header>
+        <b>外观</b>
+      </template>
+      <el-form label-width="130px">
+        <el-form-item label="主题">
+          <el-radio-group :model-value="appearanceMode" @change="setAppearance">
+            <el-radio-button value="system">跟随系统</el-radio-button>
+            <el-radio-button value="light">浅色</el-radio-button>
+            <el-radio-button value="dark">深色</el-radio-button>
+          </el-radio-group>
+          <span class="form-hint">默认跟随系统，只保存在本机，不会随配置导出</span>
+        </el-form-item>
+      </el-form>
+    </el-card>
+
     <el-card class="mcp-card" shadow="never">
       <template #header>
         <div class="mcp-header">
@@ -299,6 +318,9 @@ async function copyRecentLogs() {
   margin: 0;
 }
 .mcp-card {
+  margin-bottom: 8px;
+}
+.appearance-card {
   margin-bottom: 8px;
 }
 .logging-card {

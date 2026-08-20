@@ -1,5 +1,40 @@
-/* 与 SSH 终端色板对齐的全局暗色主题 */
+/* 浅色为默认变量；html.dark 覆盖为深色。Element Plus 暗色 css-vars 只在 html.dark 时生效 */
 :root {
+  --app-bg: #eef1f6;
+  --app-panel: #ffffff;
+  --app-panel-2: #f3f5f9;
+  --app-border: #d5dbe6;
+  --app-text: #1e2530;
+  --app-muted: #667085;
+  --app-accent: #1b8f5f;
+  --app-accent-dim: rgba(27, 143, 95, 0.12);
+  --app-radius: 8px;
+  --app-radius-lg: 10px;
+  --app-shadow: 0 10px 28px rgba(28, 36, 48, 0.12);
+
+  --el-color-primary: #1b8f5f;
+  --el-color-primary-light-3: #59b08b;
+  --el-color-primary-light-5: #8dc8ad;
+  --el-color-primary-light-7: #c1e0d0;
+  --el-color-primary-light-8: #d5ebe0;
+  --el-color-primary-light-9: #eaf5f0;
+  --el-color-primary-dark-2: #16724c;
+
+  --el-menu-bg-color: #ffffff;
+  --el-menu-hover-bg-color: #f3f5f9;
+  --el-menu-active-color: #1b8f5f;
+  --el-menu-text-color: #667085;
+  --el-menu-hover-text-color: #1e2530;
+  --el-menu-border-color: #d5dbe6;
+
+  --el-border-radius-base: 8px;
+  --el-border-radius-small: 6px;
+  --el-border-radius-round: 20px;
+
+  color-scheme: light;
+}
+
+html.dark {
   --app-bg: #0f1218;
   --app-panel: #151a22;
   --app-panel-2: #1a2130;
@@ -8,11 +43,8 @@
   --app-muted: #8b95a8;
   --app-accent: #3dd68c;
   --app-accent-dim: rgba(61, 214, 140, 0.15);
-  --app-radius: 8px;
-  --app-radius-lg: 10px;
-}
+  --app-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
 
-html.dark {
   --el-color-primary: #3dd68c;
   --el-color-primary-light-3: #6ae0a8;
   --el-color-primary-light-5: #8ee7bc;
@@ -61,10 +93,6 @@ html.dark {
   --el-menu-hover-text-color: #d7dde8;
   --el-menu-border-color: #2a3344;
 
-  --el-border-radius-base: 8px;
-  --el-border-radius-small: 6px;
-  --el-border-radius-round: 20px;
-
   color-scheme: dark;
 }
 
@@ -79,7 +107,7 @@ body,
 }
 
 /* Element Plus：卡片 / 表格 / 输入 / 对话框 / 折叠 / 标签页 统一有边框 */
-html.dark .el-card {
+.el-card {
   --el-card-border-color: var(--app-border);
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius);
@@ -87,16 +115,16 @@ html.dark .el-card {
   overflow: hidden;
 }
 
-html.dark .el-card__header {
+.el-card__header {
   border-bottom: 1px solid var(--app-border);
   background: var(--app-panel);
 }
 
-html.dark .el-card__body {
+.el-card__body {
   background: var(--app-panel);
 }
 
-html.dark .el-table {
+.el-table {
   --el-table-border-color: var(--app-border);
   --el-table-header-bg-color: var(--app-panel-2);
   --el-table-bg-color: var(--app-panel);
@@ -108,76 +136,76 @@ html.dark .el-table {
   background: var(--app-panel);
 }
 
-html.dark .el-table th.el-table__cell {
+.el-table th.el-table__cell {
   background: var(--app-panel-2);
   border-bottom: 1px solid var(--app-border);
 }
 
-html.dark .el-table td.el-table__cell {
+.el-table td.el-table__cell {
   border-bottom: 1px solid var(--app-border);
 }
 
-html.dark .el-table--border .el-table__inner-wrapper::after,
-html.dark .el-table--border::after,
-html.dark .el-table--border::before,
-html.dark .el-table__inner-wrapper::before {
+.el-table--border .el-table__inner-wrapper::after,
+.el-table--border::after,
+.el-table--border::before,
+.el-table__inner-wrapper::before {
   background-color: var(--app-border);
 }
 
-html.dark .el-input__wrapper,
-html.dark .el-textarea__inner,
-html.dark .el-select__wrapper,
-html.dark .el-input-number .el-input__wrapper {
+.el-input__wrapper,
+.el-textarea__inner,
+.el-select__wrapper,
+.el-input-number .el-input__wrapper {
   background-color: var(--app-bg);
   box-shadow: 0 0 0 1px var(--app-border) inset;
   border-radius: var(--app-radius);
 }
 
 /* 输入框与前置/后置按钮贴合处去掉内侧圆角，避免中间出现缺口 */
-html.dark .el-input-group--append .el-input__wrapper {
+.el-input-group--append .el-input__wrapper {
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;
 }
-html.dark .el-input-group--prepend .el-input__wrapper {
+.el-input-group--prepend .el-input__wrapper {
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
 }
-html.dark .el-input-group--prepend.el-input-group--append .el-input__wrapper {
+.el-input-group--prepend.el-input-group--append .el-input__wrapper {
   border-radius: 0;
 }
-html.dark .el-input-group__append {
+.el-input-group__append {
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
 }
-html.dark .el-input-group__prepend {
+.el-input-group__prepend {
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;
 }
-html.dark .el-input-group__append .el-button,
-html.dark .el-input-group__append .el-button:hover,
-html.dark .el-input-group__append .el-button:focus {
+.el-input-group__append .el-button,
+.el-input-group__append .el-button:hover,
+.el-input-group__append .el-button:focus {
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
 }
-html.dark .el-input-group__prepend .el-button,
-html.dark .el-input-group__prepend .el-button:hover,
-html.dark .el-input-group__prepend .el-button:focus {
+.el-input-group__prepend .el-button,
+.el-input-group__prepend .el-button:hover,
+.el-input-group__prepend .el-button:focus {
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;
 }
 
-html.dark .el-input__wrapper:hover,
-html.dark .el-select__wrapper:hover {
+.el-input__wrapper:hover,
+.el-select__wrapper:hover {
   box-shadow: 0 0 0 1px var(--el-border-color-extra-light) inset;
 }
 
-html.dark .el-input__wrapper.is-focus,
-html.dark .el-select__wrapper.is-focused,
-html.dark .el-textarea__inner:focus {
+.el-input__wrapper.is-focus,
+.el-select__wrapper.is-focused,
+.el-textarea__inner:focus {
   box-shadow: 0 0 0 1px var(--app-accent) inset !important;
 }
 
-html.dark .el-dialog {
+.el-dialog {
   --el-dialog-border-radius: var(--app-radius-lg);
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius-lg);
@@ -185,26 +213,26 @@ html.dark .el-dialog {
   overflow: hidden;
 }
 
-html.dark .el-dialog__header {
+.el-dialog__header {
   border-bottom: 1px solid var(--app-border);
   margin-right: 0;
   padding: 18px 20px 14px;
 }
 
-html.dark .el-dialog__headerbtn {
+.el-dialog__headerbtn {
   top: 18px;
   right: 16px;
 }
 
-html.dark .el-dialog__title {
+.el-dialog__title {
   line-height: 1.4;
 }
 
-html.dark .el-dialog__body {
+.el-dialog__body {
   padding: 16px 20px;
 }
 
-html.dark .el-dialog__footer {
+.el-dialog__footer {
   border-top: 1px solid var(--app-border);
   padding: 14px 20px 18px;
 }
@@ -224,68 +252,71 @@ html.dark .el-dialog__footer {
   outline: none;
 }
 
-html.dark .el-collapse {
+.el-collapse {
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius);
   overflow: hidden;
   background: var(--app-panel);
 }
 
-html.dark .el-collapse-item__header {
+.el-collapse-item__header {
   background: var(--app-panel);
   border-bottom: 1px solid var(--app-border);
   color: var(--app-text);
 }
 
-html.dark .el-collapse-item__wrap {
+.el-collapse-item__wrap {
   background: var(--app-panel);
   border-bottom: 1px solid var(--app-border);
 }
 
-html.dark .el-collapse-item__content {
+.el-collapse-item__content {
   padding: 12px 16px;
 }
 
-html.dark .el-collapse-item:last-child .el-collapse-item__header,
-html.dark .el-collapse-item:last-child .el-collapse-item__wrap {
+.el-collapse-item:last-child .el-collapse-item__header,
+.el-collapse-item:last-child .el-collapse-item__wrap {
   border-bottom: none;
 }
 
-html.dark .el-tabs {
+.el-tabs {
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius);
   background: var(--app-panel);
   padding: 0 12px 12px;
 }
 
-html.dark .el-tabs__header {
+.el-tabs__header {
   margin-bottom: 12px;
 }
 
-html.dark .el-tabs__nav-wrap::after {
+.el-tabs__nav-wrap::after {
   background-color: var(--app-border);
 }
 
-html.dark .el-alert {
+.el-alert {
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius);
 }
 
-html.dark .el-button {
+.el-button {
   border-radius: var(--app-radius);
 }
 
-html.dark .el-tag {
+.el-tag {
   border-radius: 6px;
 }
 
-html.dark .el-radio-button__inner {
+.el-radio-button__inner {
   border-color: var(--app-border);
-  background: var(--app-bg);
 }
 
-html.dark .el-checkbox-button__inner {
+.el-checkbox-button__inner {
   border-color: var(--app-border);
+}
+
+html.dark .el-radio-button__inner,
+html.dark .el-checkbox-button__inner {
   background: var(--app-bg);
 }
 

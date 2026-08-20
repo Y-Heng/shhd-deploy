@@ -238,11 +238,12 @@ fn extra_covers(relative: &str, extras: &[String]) -> bool {
 struct PackFile {
     relative: String,
     included: bool,
+    ignored: bool,
     reason: String,
     modified_at: String,
 }
 
-/// 忽略规则永远排除；白名单/预览勾选可带上早于日期的文件
+/// 忽略规则默认排除；白名单/预览勾选可带上早于日期的文件。忽略文件仍会出现在预览里。
 fn classify_project_files(
     project: &BackendProject,
     extra_includes: &[String],
@@ -261,14 +262,10 @@ fn classify_project_files(
     };
     let newer_than = parse_newer_than(&date_raw)?;
     let mut files = Vec::new();
-    let walker = walkdir::WalkDir::new(source_dir).into_iter().filter_entry(|entry| {
-        !path_is_ignored(&ignore, entry.path(), entry.file_type().is_dir())
-    });
-    for entry in walker {
+    for entry in walkdir::WalkDir::new(source_dir) {
         let entry = entry?;
         if !entry.file_type().is_file() { continue; }
         let path = entry.path();
-        if path_is_ignored(&ignore, path, false) { continue; }
         let relative = path
             .strip_prefix(source_dir)
             .unwrap()
@@ -280,6 +277,17 @@ fn classify_project_files(
             .and_then(|meta| meta.modified().ok())
             .map(|time| chrono::DateTime::<chrono::Local>::from(time).format("%Y-%m-%d %H:%M").to_string())
             .unwrap_or_default();
+        let ignored = path_is_ignored(&ignore, path, false);
+        if ignored {
+            files.push(PackFile {
+                relative,
+                included: false,
+                ignored: true,
+                reason: "忽略规则".into(),
+                modified_at,
+            });
+            continue;
+        }
         let too_old = newer_than.map(|cutoff| file_is_too_old(path, cutoff)).unwrap_or(false);
         let in_extra = extra_covers(&relative, extra_includes);
         let in_whitelist = path_is_ignored(&whitelist, path, false);
@@ -290,9 +298,9 @@ fn classify_project_files(
         } else {
             (true, String::new())
         };
-        files.push(PackFile { relative, included, reason, modified_at });
+        files.push(PackFile { relative, included, ignored: false, reason, modified_at });
     }
-    files.sort_by(|left, right| left.relative.cmp(&right.relative));
+    files.sort_by(|left, right| right.modified_at.cmp(&left.modified_at));
     Ok(files)
 }
 
@@ -303,6 +311,8 @@ pub struct PackTreeNode {
     pub name: String,
     pub is_dir: bool,
     pub included: bool,
+    pub ignored: bool,
+    pub disabled: bool,
     pub reason: String,
     pub modified_at: Option<String>,
     pub children: Vec<PackTreeNode>,
@@ -316,6 +326,7 @@ pub struct ProjectPackPreview {
     pub local_dir: String,
     pub included_count: u64,
     pub old_count: u64,
+    pub ignored_count: u64,
     pub tree: Vec<PackTreeNode>,
 }
 
@@ -335,6 +346,7 @@ fn build_pack_tree(files: &[PackFile]) -> Vec<PackTreeNode> {
                 current.dirs.entry((*part).to_string()).or_default().file = Some(PackFile {
                     relative: file.relative.clone(),
                     included: file.included,
+                    ignored: file.ignored,
                     reason: file.reason.clone(),
                     modified_at: file.modified_at.clone(),
                 });
@@ -347,7 +359,7 @@ fn build_pack_tree(files: &[PackFile]) -> Vec<PackTreeNode> {
 }
 
 fn flatten_tree(parent: &str, builder: &TreeBuilder) -> Vec<PackTreeNode> {
-    builder
+    let mut nodes: Vec<PackTreeNode> = builder
         .dirs
         .iter()
         .map(|(name, child)| {
@@ -358,6 +370,8 @@ fn flatten_tree(parent: &str, builder: &TreeBuilder) -> Vec<PackTreeNode> {
                     name: name.clone(),
                     is_dir: false,
                     included: file.included,
+                    ignored: file.ignored,
+                    disabled: false,
                     reason: file.reason.clone(),
                     modified_at: Some(file.modified_at.clone()).filter(|value| !value.is_empty()),
                     children: Vec::new(),
@@ -365,21 +379,44 @@ fn flatten_tree(parent: &str, builder: &TreeBuilder) -> Vec<PackTreeNode> {
             } else {
                 let children = flatten_tree(&path, child);
                 let included = children.iter().any(|node| node.included);
+                let ignored = !children.is_empty() && children.iter().all(|node| node.ignored);
                 PackTreeNode {
                     path,
                     name: name.clone(),
                     is_dir: true,
                     included,
-                    reason: String::new(),
-                    modified_at: None,
+                    ignored,
+                    disabled: false,
+                    reason: if ignored { "忽略规则".into() } else { String::new() },
+                    modified_at: node_newest_time(&children),
                     children,
                 }
             }
         })
-        .collect()
+        .collect();
+    sort_pack_nodes(&mut nodes);
+    nodes
 }
 
-/// 部署预览：返回每个项目过滤后的文件树（忽略的不出现，早于改动起始日的默认不勾选）
+fn node_newest_time(nodes: &[PackTreeNode]) -> Option<String> {
+    nodes
+        .iter()
+        .filter_map(|node| node.modified_at.clone())
+        .max()
+}
+
+fn sort_pack_nodes(nodes: &mut [PackTreeNode]) {
+    nodes.sort_by(|left, right| match left.ignored.cmp(&right.ignored) {
+        std::cmp::Ordering::Equal => right
+            .modified_at
+            .as_deref()
+            .unwrap_or("")
+            .cmp(left.modified_at.as_deref().unwrap_or("")),
+        order => order,
+    });
+}
+
+/// 部署预览：忽略文件会显示在末尾且默认不勾选；早于改动起始日的默认不勾选
 pub fn preview_backend_pack(
     config: &AppConfig,
     group_id: &str,
@@ -396,13 +433,15 @@ pub fn preview_backend_pack(
         if !project_ids.contains(&project.id) { continue; }
         let files = classify_project_files(project, &[], newer_than)?;
         let included_count = files.iter().filter(|file| file.included).count() as u64;
-        let old_count = files.iter().filter(|file| !file.included).count() as u64;
+        let ignored_count = files.iter().filter(|file| file.ignored).count() as u64;
+        let old_count = files.iter().filter(|file| !file.included && !file.ignored).count() as u64;
         previews.push(ProjectPackPreview {
             project_id: project.id.clone(),
             project_name: project.name.clone(),
             local_dir: project.local_bin_dir.clone(),
             included_count,
             old_count,
+            ignored_count,
             tree: build_pack_tree(&files),
         });
     }

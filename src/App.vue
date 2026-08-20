@@ -217,7 +217,7 @@ onUnmounted(() => bus.off(OPEN_SSH_EVENT, onOpenSsh));
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius-lg, 10px);
   background: var(--app-panel);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--app-shadow, 0 10px 28px rgba(0, 0, 0, 0.35));
 }
 
 .deploy-float-title {

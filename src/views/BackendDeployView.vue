@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api } from "../api";
@@ -258,6 +258,9 @@ const previewLoading = ref(false);
 const previewTab = ref("");
 const previewProjects = ref<ProjectPackPreview[]>([]);
 const previewPaths = ref<Record<string, string[]>>({});
+const previewCheckedCounts = reactive<Record<string, number>>({});
+const previewExpandedKeys = reactive<Record<string, string[]>>({});
+const previewDefaultCheckedKeys = reactive<Record<string, string[]>>({});
 type PreviewTreeExpose = {
   getCheckedKeys: (leafOnly?: boolean) => string[];
   setCheckedKeys: (keys: string[]) => void;
@@ -280,20 +283,48 @@ function collectIncludedPaths(nodes: PackTreeNode[]): string[] {
   return paths;
 }
 
-function collectAllFilePaths(nodes: PackTreeNode[]): string[] {
+function collectSelectableFilePaths(nodes: PackTreeNode[]): string[] {
   const paths: string[] = [];
   for (const node of nodes) {
-    if (!node.isDir) paths.push(node.path);
-    if (node.children?.length) paths.push(...collectAllFilePaths(node.children));
+    if (!node.isDir && !node.ignored) paths.push(node.path);
+    if (node.children?.length) paths.push(...collectSelectableFilePaths(node.children));
   }
   return paths;
+}
+
+function collectDefaultExpandedKeys(nodes: PackTreeNode[]): string[] {
+  const paths: string[] = [];
+  for (const node of nodes) {
+    if (node.ignored) continue;
+    if (node.isDir) paths.push(node.path);
+  }
+  return paths;
+}
+
+function refreshPreviewChecked(projectId: string) {
+  nextTick(() => {
+    const tree = previewTreeRefs.get(projectId);
+    if (!tree) return;
+    previewCheckedCounts[projectId] = tree
+      .getCheckedKeys(true)
+      .filter((path) => !path.endsWith("/")).length;
+  });
 }
 
 function setPreviewChecked(projectId: string, checked: boolean) {
   const tree = previewTreeRefs.get(projectId);
   const project = previewProjects.value.find((item) => item.projectId === projectId);
   if (!tree || !project) return;
-  tree.setCheckedKeys(checked ? collectAllFilePaths(project.tree) : []);
+  tree.setCheckedKeys(checked ? collectSelectableFilePaths(project.tree) : []);
+  refreshPreviewChecked(projectId);
+}
+
+function previewTabLabel(item: ProjectPackPreview) {
+  const checked = previewCheckedCounts[item.projectId] ?? item.includedCount;
+  const parts = [`已选 ${checked} 个`];
+  if (item.oldCount) parts.push(`${item.oldCount} 个未达日期`);
+  if (item.ignoredCount) parts.push(`${item.ignoredCount} 个已忽略`);
+  return `${item.projectName}（${parts.join("，")}）`;
 }
 
 const previewSummary = computed(() => {
@@ -322,6 +353,15 @@ async function openPreview() {
       deployNewerThan.value || ""
     );
     previewTab.value = previewProjects.value[0]?.projectId || "";
+    for (const key of Object.keys(previewExpandedKeys)) delete previewExpandedKeys[key];
+    for (const key of Object.keys(previewDefaultCheckedKeys)) delete previewDefaultCheckedKeys[key];
+    for (const item of previewProjects.value) {
+      previewCheckedCounts[item.projectId] = item.includedCount;
+      previewExpandedKeys[item.projectId] = collectDefaultExpandedKeys(item.tree);
+      previewDefaultCheckedKeys[item.projectId] = collectIncludedPaths(item.tree);
+    }
+    await nextTick();
+    for (const item of previewProjects.value) refreshPreviewChecked(item.projectId);
   } catch (error) {
     previewVisible.value = false;
     ElMessage.error(String(error));
@@ -508,15 +548,19 @@ function splitRuleLines(text?: string | null) {
     .filter((line) => line.length > 0);
 }
 
-function addRuleLine(field: "ignoreRules" | "whitelistRules", rule: string) {
-  const trimmed = rule.trim();
-  if (!trimmed) return;
+function addRuleLines(field: "ignoreRules" | "whitelistRules", rules: string[]) {
   const current = splitRuleLines(projectForm[field]);
-  if (current.includes(trimmed)) {
-    ElMessage.info("该规则已添加");
+  let added = 0;
+  for (const raw of rules) {
+    const trimmed = raw.trim();
+    if (!trimmed || current.includes(trimmed)) continue;
+    current.push(trimmed);
+    added += 1;
+  }
+  if (added === 0) {
+    ElMessage.info("规则已存在或为空");
     return;
   }
-  current.push(trimmed);
   projectForm[field] = current.join("\n");
 }
 
@@ -526,10 +570,29 @@ function removeRuleLine(field: "ignoreRules" | "whitelistRules", rule: string) {
     .join("\n");
 }
 
+function splitDraftRules(text: string) {
+  return text
+    .split(/[,，]/)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
 function commitDraftRule(field: "ignoreRules" | "whitelistRules") {
   const draft = field === "ignoreRules" ? ignoreRuleDraft : whitelistRuleDraft;
-  addRuleLine(field, draft.value);
+  const rules = splitDraftRules(draft.value);
+  if (!rules.length) return;
+  addRuleLines(field, rules);
   draft.value = "";
+}
+
+async function copyRuleLines(field: "ignoreRules" | "whitelistRules") {
+  const rules = splitRuleLines(projectForm[field]);
+  if (rules.length === 0) {
+    ElMessage.warning("暂无规则可复制");
+    return;
+  }
+  await navigator.clipboard.writeText(rules.join(","));
+  ElMessage.success("已复制，可用逗号分隔粘贴到输入框后回车");
 }
 
 function normalizeFsPath(path: string) {
@@ -572,10 +635,12 @@ async function pickRulePaths(field: "ignoreRules" | "whitelistRules", directory:
   });
   if (!selected) return;
   const paths = Array.isArray(selected) ? selected : [selected];
+  const rules: string[] = [];
   for (const absolutePath of paths) {
     const rule = toProjectRelativeRule(absolutePath, directory);
-    if (rule) addRuleLine(field, rule);
+    if (rule) rules.push(rule);
   }
+  if (rules.length) addRuleLines(field, rules);
 }
 
 async function saveProject() {
@@ -970,9 +1035,10 @@ async function removeProject(project: BackendProject) {
             <div class="rule-tag-actions">
               <el-button @click="pickRulePaths('ignoreRules', false)">选择文件</el-button>
               <el-button @click="pickRulePaths('ignoreRules', true)">选择文件夹</el-button>
+              <el-button @click="copyRuleLines('ignoreRules')">复制</el-button>
               <el-input
                 v-model="ignoreRuleDraft"
-                placeholder="输入规则后回车，如 Configs/ 或 *.pdb"
+                placeholder="多个规则用逗号分隔后回车，如 Configs/,*.pdb"
                 @keyup.enter="commitDraftRule('ignoreRules')"
               />
             </div>
@@ -997,9 +1063,10 @@ async function removeProject(project: BackendProject) {
             <div class="rule-tag-actions">
               <el-button @click="pickRulePaths('whitelistRules', false)">选择文件</el-button>
               <el-button @click="pickRulePaths('whitelistRules', true)">选择文件夹</el-button>
+              <el-button @click="copyRuleLines('whitelistRules')">复制</el-button>
               <el-input
                 v-model="whitelistRuleDraft"
-                placeholder="输入规则后回车，如 Newtonsoft.Json.dll"
+                placeholder="多个规则用逗号分隔后回车，如 a.dll,b.dll"
                 @keyup.enter="commitDraftRule('whitelistRules')"
               />
             </div>
@@ -1065,18 +1132,19 @@ async function removeProject(project: BackendProject) {
     <el-dialog v-model="previewVisible" title="部署文件预览" width="860px" top="8vh">
       <div v-loading="previewLoading">
         <p class="form-hint" style="margin: 0 0 10px 0">
-          默认勾选将要上传的文件。灰色「早于改动起始日」的是被时间过滤掉的，新加的老包请勾上。忽略规则匹配的文件不会出现。
+          默认勾选将要上传的文件，上方个数随勾选变化。按修改时间从新到旧排列；灰色「早于改动起始日」可勾选补上；浅色「忽略规则」默认折叠且不勾选，勾上后本次会上传。
         </p>
         <el-tabs v-if="previewProjects.length > 0" v-model="previewTab">
           <el-tab-pane
             v-for="item in previewProjects"
             :key="item.projectId"
             :name="item.projectId"
-            :label="`${item.projectName}（${item.includedCount} 个，另 ${item.oldCount} 个未达日期）`"
           >
+            <template #label>{{ previewTabLabel(item) }}</template>
             <div class="preview-tree-toolbar">
               <el-button size="small" @click="setPreviewChecked(item.projectId, true)">全选</el-button>
               <el-button size="small" @click="setPreviewChecked(item.projectId, false)">全不选</el-button>
+              <span class="form-hint" style="margin-left: 0">当前已选 {{ previewCheckedCounts[item.projectId] ?? item.includedCount }} 个文件</span>
             </div>
             <div class="pack-tree-wrap">
               <el-tree
@@ -1084,16 +1152,22 @@ async function removeProject(project: BackendProject) {
                 :data="item.tree"
                 show-checkbox
                 node-key="path"
-                :default-checked-keys="collectIncludedPaths(item.tree)"
-                :default-expanded-keys="item.tree.map((node) => node.path)"
+                :default-checked-keys="previewDefaultCheckedKeys[item.projectId] || []"
+                :default-expanded-keys="previewExpandedKeys[item.projectId] || []"
+                :expand-on-click-node="false"
+                :auto-expand-parent="false"
                 :props="{ label: 'name', children: 'children' }"
+                @check="() => refreshPreviewChecked(item.projectId)"
               >
                 <template #default="{ data }">
-                  <span class="pack-tree-node">
+                  <span class="pack-tree-node" :class="{ 'is-ignored': data.ignored }">
                     <span>{{ data.name }}</span>
                     <span v-if="!data.isDir" class="pack-tree-meta">
                       {{ data.modifiedAt }}
                       <em v-if="data.reason">{{ data.reason }}</em>
+                    </span>
+                    <span v-else-if="data.ignored" class="pack-tree-meta">
+                      <em>忽略规则</em>
                     </span>
                   </span>
                 </template>
@@ -1193,7 +1267,7 @@ async function removeProject(project: BackendProject) {
   align-items: center;
 }
 .rule-tag-actions .el-input {
-  width: 280px;
+  width: 320px;
 }
 .script-textarea :deep(textarea) {
   font-family: Consolas, "Courier New", monospace;
@@ -1218,6 +1292,10 @@ async function removeProject(project: BackendProject) {
   align-items: baseline;
   gap: 10px;
 }
+.pack-tree-node.is-ignored {
+  color: var(--el-text-color-placeholder);
+  opacity: 0.72;
+}
 .pack-tree-meta {
   font-size: 12px;
   color: var(--el-text-color-secondary);
@@ -1226,5 +1304,9 @@ async function removeProject(project: BackendProject) {
   font-style: normal;
   margin-left: 6px;
   color: var(--el-color-warning);
+}
+.pack-tree-node.is-ignored .pack-tree-meta,
+.pack-tree-node.is-ignored .pack-tree-meta em {
+  color: var(--el-text-color-placeholder);
 }
 </style>

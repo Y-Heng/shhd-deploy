@@ -79,6 +79,8 @@ export interface PackTreeNode {
   name: string;
   isDir: boolean;
   included: boolean;
+  ignored?: boolean;
+  disabled?: boolean;
   reason: string;
   modifiedAt?: string | null;
   children: PackTreeNode[];
@@ -90,6 +92,7 @@ export interface ProjectPackPreview {
   localDir: string;
   includedCount: number;
   oldCount: number;
+  ignoredCount?: number;
   tree: PackTreeNode[];
 }
 

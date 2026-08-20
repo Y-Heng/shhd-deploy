@@ -125,8 +125,8 @@ onUnmounted(() => {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: #1e1e2e;
-  color: #d7dde8;
+  background: var(--app-bg);
+  color: var(--app-text);
 }
 .popout-bar {
   display: flex;
@@ -134,8 +134,8 @@ onUnmounted(() => {
   gap: 10px;
   height: 42px;
   padding: 0 12px;
-  border-bottom: 1px solid #2a3344;
-  background: #151a22;
+  border-bottom: 1px solid var(--app-border);
+  background: var(--app-panel);
   flex-shrink: 0;
 }
 .popout-title {
@@ -152,9 +152,9 @@ onUnmounted(() => {
 }
 .mode-btn,
 .ghost-btn {
-  border: 1px solid #2a3344;
+  border: 1px solid var(--app-border);
   background: transparent;
-  color: #8b95a8;
+  color: var(--app-muted);
   height: 28px;
   padding: 0 10px;
   border-radius: 8px;
@@ -170,9 +170,9 @@ onUnmounted(() => {
 .mode-btn.active,
 .mode-btn:hover,
 .ghost-btn:hover {
-  color: #3dd68c;
-  border-color: #3dd68c;
-  background: rgba(61, 214, 140, 0.15);
+  color: var(--app-accent);
+  border-color: var(--app-accent);
+  background: var(--app-accent-dim);
 }
 .popout-body {
   flex: 1;
@@ -184,8 +184,8 @@ onUnmounted(() => {
   justify-content: space-between;
   gap: 12px;
   padding: 8px 12px;
-  border-bottom: 1px solid #2a3344;
-  background: #151a22;
+  border-bottom: 1px solid var(--app-border);
+  background: var(--app-panel);
 }
 .sftp-transfer-text {
   display: flex;
@@ -193,10 +193,10 @@ onUnmounted(() => {
   gap: 10px;
   min-width: 0;
   font-size: 12px;
-  color: #8b95a8;
+  color: var(--app-muted);
 }
 .sftp-transfer-text strong {
-  color: #d7dde8;
+  color: var(--app-text);
 }
 .sftp-transfer-text span {
   overflow: hidden;
@@ -207,7 +207,7 @@ onUnmounted(() => {
   flex: 1;
   white-space: pre-line;
   line-height: 1.4;
-  color: #d7dde8;
+  color: var(--app-text);
 }
 .term-main,
 .sftp-main {

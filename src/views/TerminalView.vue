@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowRight, Close, Delete, EditPen, Folder, Loading, Plus, Search } from '@element-plus/icons-vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
@@ -283,7 +283,8 @@ async function openSessionForServer(serverId: string) {
     api.terminalResize(current.sessionId, cols, rows)
   })
 
-  const session: TermSession = {
+  // 必须用 reactive：push 进数组后模板拿到的是代理，本地普通对象改 connecting 不会触发重绘
+  const session = reactive<TermSession>({
     uiId,
     sessionId: '',
     serverId: server.id,
@@ -294,7 +295,7 @@ async function openSessionForServer(serverId: string) {
     connecting: true,
     popoutLabel: '',
     panelMode: 'terminal'
-  }
+  })
   sessions.value.push(session)
   activeSessionId.value = uiId
   syncSessionFlags()
