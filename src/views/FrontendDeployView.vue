@@ -14,7 +14,6 @@ import type {
 } from "../types";
 
 const PRESET_GROUPS = ["开发环境", "正式环境"];
-const extraGroups = ref<string[]>([]);
 
 const props = defineProps<{ active?: boolean }>();
 
@@ -50,9 +49,22 @@ const editForm = reactive<FrontendTarget>({
 const task = frontendDeployTask;
 
 const groupOptions = computed(() => {
-  const names = new Set([...PRESET_GROUPS, ...extraGroups.value]);
-  for (const target of config.value?.frontendTargets ?? []) names.add(target.group || "未分组");
-  return Array.from(names);
+  const order = [...(config.value?.frontendGroupOrder ?? [])];
+  const seen = new Set(order);
+  if (order.length === 0) {
+    for (const name of PRESET_GROUPS) {
+      order.push(name);
+      seen.add(name);
+    }
+  }
+  for (const target of config.value?.frontendTargets ?? []) {
+    const name = target.group || "未分组";
+    if (!seen.has(name)) {
+      order.push(name);
+      seen.add(name);
+    }
+  }
+  return order;
 });
 
 const visibleTargets = computed(() =>
@@ -81,11 +93,12 @@ async function reloadPage() {
   if (!groups.includes(selectedGroup.value) && groups.length > 0) selectedGroup.value = groups[0];
 }
 
-watch(selectedGroup, (groupName) => {
+watch(selectedGroup, async (groupName) => {
   selectedTargetIds.value = [];
   const trimmed = (groupName || "").trim();
-  if (!trimmed) return;
-  if (!groupOptions.value.includes(trimmed)) extraGroups.value = [...extraGroups.value, trimmed];
+  if (!trimmed || !config.value) return;
+  if (groupOptions.value.includes(trimmed)) return;
+  await persistFrontendGroupOrder([...groupOptions.value, trimmed]);
 });
 
 watch(
@@ -131,6 +144,39 @@ const visibleReleases = computed(() => {
   return releases.value.filter((record) => record.groupName === historyGroupFilter.value);
 });
 
+async function persistFrontendGroupOrder(order: string[]) {
+  if (!config.value) return;
+  config.value.frontendGroupOrder = [...order];
+  const grouped = new Map<string, FrontendTarget[]>();
+  for (const name of order) grouped.set(name, []);
+  for (const target of config.value.frontendTargets) {
+    const name = target.group || "未分组";
+    if (!grouped.has(name)) grouped.set(name, []);
+    grouped.get(name)!.push(target);
+  }
+  const next: FrontendTarget[] = [];
+  for (const name of order) next.push(...(grouped.get(name) ?? []));
+  for (const [name, list] of grouped) {
+    if (!order.includes(name)) next.push(...list);
+  }
+  config.value.frontendTargets = next;
+  await api.saveConfig(config.value);
+}
+
+function frontendGroupIndex(): number {
+  return groupOptions.value.indexOf(selectedGroup.value);
+}
+
+async function moveFrontendGroup(delta: number) {
+  const order = [...groupOptions.value];
+  const index = frontendGroupIndex();
+  const nextIndex = index + delta;
+  if (index < 0 || nextIndex < 0 || nextIndex >= order.length) return;
+  const [item] = order.splice(index, 1);
+  order.splice(nextIndex, 0, item);
+  await persistFrontendGroupOrder(order);
+}
+
 async function addEnvironment() {
   try {
     const { value } = await ElMessageBox.prompt("请输入环境名称", "添加环境", {
@@ -144,11 +190,35 @@ async function addEnvironment() {
       },
     });
     const name = String(value).trim();
-    extraGroups.value = [...extraGroups.value, name];
+    await persistFrontendGroupOrder([...groupOptions.value, name]);
     selectedGroup.value = name;
     ElMessage.success(`已切换到「${name}」，请添加该环境下的项目`);
   } catch {
     return;
+  }
+}
+
+async function deleteEnvironment() {
+  if (!config.value || !selectedGroup.value) return;
+  const name = selectedGroup.value;
+  const projectCount = visibleTargets.value.length;
+  const extra = projectCount > 0 ? `\n该环境下有 ${projectCount} 个项目，将一并删除。` : "";
+  try {
+    await ElMessageBox.confirm(`确认删除环境「${name}」？${extra}`, "删除确认", {
+      type: "warning",
+      confirmButtonText: "删除",
+    });
+    config.value.frontendTargets = config.value.frontendTargets.filter(
+      (target) => (target.group || "未分组") !== name
+    );
+    const order = groupOptions.value.filter((item) => item !== name);
+    await persistFrontendGroupOrder(order);
+    selectedGroup.value = order[0] || "";
+    selectedTargetIds.value = [];
+    ElMessage.success("已删除");
+  } catch (error) {
+    if (error === "cancel" || error === "close") return;
+    ElMessage.error(String(error));
   }
 }
 
@@ -273,6 +343,8 @@ async function saveTarget() {
     const index = config.value.frontendTargets.findIndex((item) => item.id === clone.id);
     if (index >= 0) config.value.frontendTargets.splice(index, 1, clone);
   }
+  if (clone.group && !groupOptions.value.includes(clone.group))
+    config.value.frontendGroupOrder = [...groupOptions.value, clone.group];
   await api.saveConfig(config.value);
   selectedGroup.value = clone.group || "开发环境";
   dialogVisible.value = false;
@@ -341,6 +413,21 @@ async function startRollback(record: FrontendReleaseRecord) {
           <el-option v-for="groupName in groupOptions" :key="groupName" :label="groupName" :value="groupName" />
         </el-select>
         <el-button @click="addEnvironment">添加环境</el-button>
+        <el-button
+          type="danger"
+          plain
+          :disabled="!selectedGroup"
+          @click="deleteEnvironment"
+        >
+          删除
+        </el-button>
+        <el-button :disabled="frontendGroupIndex() <= 0" @click="moveFrontendGroup(-1)">上移</el-button>
+        <el-button
+          :disabled="frontendGroupIndex() < 0 || frontendGroupIndex() >= groupOptions.length - 1"
+          @click="moveFrontendGroup(1)"
+        >
+          下移
+        </el-button>
       </div>
     </div>
     <el-alert
@@ -579,6 +666,7 @@ async function startRollback(record: FrontendReleaseRecord) {
 .header-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
 }
 .deploy-options {

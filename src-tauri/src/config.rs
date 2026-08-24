@@ -334,6 +334,9 @@ pub struct AppConfig {
     pub backend_groups: Vec<BackendGroup>,
     #[serde(default)]
     pub frontend_targets: Vec<FrontendTarget>,
+    /// 前端环境分组显示顺序（含尚无项目的空环境）
+    #[serde(default)]
+    pub frontend_group_order: Vec<String>,
     #[serde(default)]
     pub docker_targets: Vec<DockerTarget>,
     #[serde(default)]
@@ -658,6 +661,7 @@ fn default_template() -> AppConfig {
             pack_command: None,
             pack_work_dir: None,
         }],
+        frontend_group_order: vec!["开发环境".into(), "正式环境".into()],
         docker_targets: vec![DockerTarget {
             id: "zx-infra".into(),
             name: "zx-infra 集群".into(),

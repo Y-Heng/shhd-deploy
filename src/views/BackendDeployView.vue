@@ -512,38 +512,75 @@ async function persistConfig() {
 
 async function addGroup() {
   if (!config.value) return;
-  const newGroup: BackendGroup = {
-    id: `group-${Date.now()}`,
-    name: "新负载组",
-    serverIds: config.value.servers[0] ? [config.value.servers[0].id] : [],
-    primaryServerId: null,
-    secondaryServerId: null,
-    stagingDir: "D:\\code\\sites\\devlop",
-    backupDir: "D:\\code\\sites\\backup",
-    copyMode: "upload",
-    projects: [],
-  };
-  config.value.backendGroups.push(newGroup);
+  try {
+    const { value } = await ElMessageBox.prompt("请输入负载组名称", "添加负载组", {
+      confirmButtonText: "添加",
+      inputPlaceholder: "如 service组",
+      inputValidator: (name: string) => {
+        const trimmed = name?.trim() ?? "";
+        if (!trimmed) return "请输入负载组名称";
+        if (config.value?.backendGroups.some((group) => group.name === trimmed)) return "该负载组已存在";
+        return true;
+      },
+    });
+    const name = String(value).trim();
+    const newGroup: BackendGroup = {
+      id: `group-${Date.now()}`,
+      name,
+      serverIds: config.value.servers[0] ? [config.value.servers[0].id] : [],
+      primaryServerId: null,
+      secondaryServerId: null,
+      stagingDir: "D:\\code\\sites\\devlop",
+      backupDir: "D:\\code\\sites\\backup",
+      copyMode: "upload",
+      projects: [],
+    };
+    config.value.backendGroups.push(newGroup);
+    await api.saveConfig(config.value);
+    selectGroup(newGroup.id);
+    activeTab.value = "settings";
+    ElMessage.success("已添加负载组，请完善配置");
+  } catch {
+    return;
+  }
+}
+
+function backendGroupIndex(): number {
+  if (!config.value) return -1;
+  return config.value.backendGroups.findIndex((group) => group.id === selectedGroupId.value);
+}
+
+async function moveBackendGroup(delta: number) {
+  if (!config.value) return;
+  const list = config.value.backendGroups;
+  const index = backendGroupIndex();
+  const nextIndex = index + delta;
+  if (index < 0 || nextIndex < 0 || nextIndex >= list.length) return;
+  const [item] = list.splice(index, 1);
+  list.splice(nextIndex, 0, item);
   await api.saveConfig(config.value);
-  selectGroup(newGroup.id);
-  ElMessage.success("已添加负载组，请完善配置");
 }
 
 async function removeGroup() {
   if (!config.value || !selectedGroup.value) return;
-  await ElMessageBox.confirm(
-    `确认删除负载组 ${selectedGroup.value.name} 及其全部项目配置？`,
-    "删除确认",
-    { type: "warning" }
-  );
-  config.value.backendGroups = config.value.backendGroups.filter(
-    (group) => group.id !== selectedGroupId.value
-  );
-  await api.saveConfig(config.value);
-  if (config.value.backendGroups.length > 0)
-    selectGroup(config.value.backendGroups[0].id);
-  else selectedGroupId.value = "";
-  ElMessage.success("已删除");
+  try {
+    await ElMessageBox.confirm(
+      `确认删除负载组 ${selectedGroup.value.name} 及其全部项目配置？`,
+      "删除确认",
+      { type: "warning", confirmButtonText: "删除" }
+    );
+    config.value.backendGroups = config.value.backendGroups.filter(
+      (group) => group.id !== selectedGroupId.value
+    );
+    await api.saveConfig(config.value);
+    if (config.value.backendGroups.length > 0)
+      selectGroup(config.value.backendGroups[0].id);
+    else selectedGroupId.value = "";
+    ElMessage.success("已删除");
+  } catch (error) {
+    if (error === "cancel" || error === "close") return;
+    ElMessage.error(String(error));
+  }
 }
 
 function openAddProject() {
@@ -764,23 +801,41 @@ async function removeProject(project: BackendProject) {
   <div v-if="config">
     <div class="view-header">
       <h2>后端部署</h2>
-      <el-select
-        v-if="config.backendGroups.length > 0"
-        :model-value="selectedGroupId"
-        style="width: 280px"
-        @change="selectGroup"
-      >
-        <el-option
-          v-for="group in config.backendGroups"
-          :key="group.id"
-          :label="group.name"
-          :value="group.id"
-        />
-      </el-select>
+      <div class="header-actions">
+        <el-select
+          v-if="config.backendGroups.length > 0"
+          :model-value="selectedGroupId"
+          style="width: 240px"
+          @change="selectGroup"
+        >
+          <el-option
+            v-for="group in config.backendGroups"
+            :key="group.id"
+            :label="group.name"
+            :value="group.id"
+          />
+        </el-select>
+        <el-button @click="addGroup">添加负载组</el-button>
+        <el-button
+          v-if="selectedGroup"
+          type="danger"
+          plain
+          @click="removeGroup"
+        >
+          删除
+        </el-button>
+        <el-button :disabled="backendGroupIndex() <= 0" @click="moveBackendGroup(-1)">上移</el-button>
+        <el-button
+          :disabled="backendGroupIndex() < 0 || backendGroupIndex() >= (config.backendGroups.length - 1)"
+          @click="moveBackendGroup(1)"
+        >
+          下移
+        </el-button>
+      </div>
     </div>
     <el-alert
       v-if="config.backendGroups.length === 0"
-      title="尚未配置后端负载组，请到「项目配置」页签添加"
+      title="尚未配置后端负载组，请点右上角「添加负载组」"
       type="warning"
       :closable="false"
       style="margin-bottom: 12px"
@@ -973,18 +1028,6 @@ async function removeProject(project: BackendProject) {
       </el-tab-pane>
 
       <el-tab-pane label="项目配置" name="settings">
-        <div style="margin-bottom: 12px">
-          <el-button size="small" @click="addGroup">添加负载组</el-button>
-          <el-button
-            v-if="selectedGroup"
-            size="small"
-            type="danger"
-            plain
-            @click="removeGroup"
-          >
-            删除当前组
-          </el-button>
-        </div>
         <template v-if="selectedGroup">
           <el-form label-width="110px" style="max-width: 760px">
             <el-form-item label="组名称">
@@ -1078,6 +1121,7 @@ async function removeProject(project: BackendProject) {
             </el-table-column>
           </el-table>
         </template>
+        <div v-else class="form-hint" style="margin-left: 0">请先在右上角添加负载组</div>
       </el-tab-pane>
     </el-tabs>
 
@@ -1332,6 +1376,12 @@ async function removeProject(project: BackendProject) {
 }
 .view-header h2 {
   margin: 0;
+}
+.header-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 .form-hint {
   margin-left: 12px;

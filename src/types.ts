@@ -224,6 +224,8 @@ export interface AppConfig {
   tunnels: TunnelConfig[];
   backendGroups: BackendGroup[];
   frontendTargets: FrontendTarget[];
+  /** 前端环境分组显示顺序（含尚无项目的空环境） */
+  frontendGroupOrder?: string[];
   dockerTargets: DockerTarget[];
   mcp: McpConfig;
   quickCommands?: QuickCommand[];
