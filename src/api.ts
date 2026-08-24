@@ -139,4 +139,8 @@ export const api = {
   openLogDir: () => invoke<void>("open_log_dir"),
   readRecentLogs: (maxLines?: number) =>
     invoke<string>("read_recent_logs", { maxLines }),
+
+  /** 将原生标题栏颜色与当前深浅色对齐 */
+  applyWindowChrome: (dark: boolean) =>
+    invoke<void>("apply_window_chrome", { dark }),
 };

@@ -1,6 +1,7 @@
 /** 外观主题：跟随系统 / 浅色 / 深色，只存在本机 localStorage */
 
 import { ref } from "vue";
+import { api } from "../api";
 
 export type AppearanceMode = "system" | "light" | "dark";
 
@@ -33,6 +34,7 @@ export function applyAppearance(mode: AppearanceMode) {
   const dark = resolvedDark(mode);
   document.documentElement.classList.toggle("dark", dark);
   document.documentElement.style.colorScheme = dark ? "dark" : "light";
+  void api.applyWindowChrome(dark).catch(() => {});
 }
 
 function bindSystemListener() {

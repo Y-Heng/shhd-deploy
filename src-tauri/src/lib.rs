@@ -15,6 +15,7 @@ mod sftp_browser;
 mod ssh;
 mod terminal;
 mod tunnel;
+mod window_chrome;
 
 use config::AppConfig;
 use deploy_backend::{BackendDeployRequest, ProjectPackPreview, ReleaseRecord};
@@ -971,7 +972,8 @@ pub fn run() {
             get_log_dir,
             set_logging_enabled,
             open_log_dir,
-            read_recent_logs
+            read_recent_logs,
+            window_chrome::apply_window_chrome
         ])
         .run(tauri::generate_context!())
         .expect("启动应用失败");
