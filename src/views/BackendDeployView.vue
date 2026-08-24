@@ -545,15 +545,15 @@ async function addGroup() {
   }
 }
 
-function backendGroupIndex(): number {
+function backendGroupIndex(groupId: string): number {
   if (!config.value) return -1;
-  return config.value.backendGroups.findIndex((group) => group.id === selectedGroupId.value);
+  return config.value.backendGroups.findIndex((group) => group.id === groupId);
 }
 
-async function moveBackendGroup(delta: number) {
+async function moveBackendGroup(groupId: string, delta: number) {
   if (!config.value) return;
   const list = config.value.backendGroups;
-  const index = backendGroupIndex();
+  const index = backendGroupIndex(groupId);
   const nextIndex = index + delta;
   if (index < 0 || nextIndex < 0 || nextIndex >= list.length) return;
   const [item] = list.splice(index, 1);
@@ -561,21 +561,22 @@ async function moveBackendGroup(delta: number) {
   await api.saveConfig(config.value);
 }
 
-async function removeGroup() {
-  if (!config.value || !selectedGroup.value) return;
+async function removeGroup(groupId: string) {
+  if (!config.value) return;
+  const group = config.value.backendGroups.find((item) => item.id === groupId);
+  if (!group) return;
   try {
     await ElMessageBox.confirm(
-      `确认删除负载组 ${selectedGroup.value.name} 及其全部项目配置？`,
+      `确认删除负载组 ${group.name} 及其全部项目配置？`,
       "删除确认",
       { type: "warning", confirmButtonText: "删除" }
     );
-    config.value.backendGroups = config.value.backendGroups.filter(
-      (group) => group.id !== selectedGroupId.value
-    );
+    config.value.backendGroups = config.value.backendGroups.filter((item) => item.id !== groupId);
     await api.saveConfig(config.value);
-    if (config.value.backendGroups.length > 0)
-      selectGroup(config.value.backendGroups[0].id);
-    else selectedGroupId.value = "";
+    if (selectedGroupId.value === groupId) {
+      if (config.value.backendGroups.length > 0) selectGroup(config.value.backendGroups[0].id);
+      else selectedGroupId.value = "";
+    }
     ElMessage.success("已删除");
   } catch (error) {
     if (error === "cancel" || error === "close") return;
@@ -805,32 +806,40 @@ async function removeProject(project: BackendProject) {
         <el-select
           v-if="config.backendGroups.length > 0"
           :model-value="selectedGroupId"
-          style="width: 240px"
+          style="width: 300px"
           @change="selectGroup"
         >
           <el-option
-            v-for="group in config.backendGroups"
+            v-for="(group, index) in config.backendGroups"
             :key="group.id"
             :label="group.name"
             :value="group.id"
-          />
+          >
+            <div class="group-option">
+              <span class="group-option-name">{{ group.name }}</span>
+              <span class="group-option-actions" @mousedown.stop @click.stop>
+                <button
+                  type="button"
+                  class="opt-btn"
+                  :disabled="index <= 0"
+                  @click="moveBackendGroup(group.id, -1)"
+                >
+                  上移
+                </button>
+                <button
+                  type="button"
+                  class="opt-btn"
+                  :disabled="index >= config.backendGroups.length - 1"
+                  @click="moveBackendGroup(group.id, 1)"
+                >
+                  下移
+                </button>
+                <button type="button" class="opt-btn is-danger" @click="removeGroup(group.id)">删除</button>
+              </span>
+            </div>
+          </el-option>
         </el-select>
         <el-button @click="addGroup">添加负载组</el-button>
-        <el-button
-          v-if="selectedGroup"
-          type="danger"
-          plain
-          @click="removeGroup"
-        >
-          删除
-        </el-button>
-        <el-button :disabled="backendGroupIndex() <= 0" @click="moveBackendGroup(-1)">上移</el-button>
-        <el-button
-          :disabled="backendGroupIndex() < 0 || backendGroupIndex() >= (config.backendGroups.length - 1)"
-          @click="moveBackendGroup(1)"
-        >
-          下移
-        </el-button>
       </div>
     </div>
     <el-alert
@@ -1382,6 +1391,46 @@ async function removeProject(project: BackendProject) {
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
+}
+.group-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+}
+.group-option-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.group-option-actions {
+  display: none;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+}
+.group-option:hover .group-option-actions {
+  display: flex;
+}
+.opt-btn {
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--el-text-color-secondary);
+  cursor: pointer;
+}
+.opt-btn:hover:not(:disabled) {
+  color: var(--el-color-primary);
+}
+.opt-btn.is-danger:hover:not(:disabled) {
+  color: var(--el-color-danger);
+}
+.opt-btn:disabled {
+  cursor: default;
+  opacity: 0.35;
 }
 .form-hint {
   margin-left: 12px;

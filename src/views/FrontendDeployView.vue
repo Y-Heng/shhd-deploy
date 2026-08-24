@@ -163,13 +163,9 @@ async function persistFrontendGroupOrder(order: string[]) {
   await api.saveConfig(config.value);
 }
 
-function frontendGroupIndex(): number {
-  return groupOptions.value.indexOf(selectedGroup.value);
-}
-
-async function moveFrontendGroup(delta: number) {
+async function moveFrontendGroup(name: string, delta: number) {
   const order = [...groupOptions.value];
-  const index = frontendGroupIndex();
+  const index = order.indexOf(name);
   const nextIndex = index + delta;
   if (index < 0 || nextIndex < 0 || nextIndex >= order.length) return;
   const [item] = order.splice(index, 1);
@@ -198,10 +194,11 @@ async function addEnvironment() {
   }
 }
 
-async function deleteEnvironment() {
-  if (!config.value || !selectedGroup.value) return;
-  const name = selectedGroup.value;
-  const projectCount = visibleTargets.value.length;
+async function deleteEnvironment(name: string) {
+  if (!config.value || !name) return;
+  const projectCount = config.value.frontendTargets.filter(
+    (target) => (target.group || "未分组") === name
+  ).length;
   const extra = projectCount > 0 ? `\n该环境下有 ${projectCount} 个项目，将一并删除。` : "";
   try {
     await ElMessageBox.confirm(`确认删除环境「${name}」？${extra}`, "删除确认", {
@@ -213,8 +210,10 @@ async function deleteEnvironment() {
     );
     const order = groupOptions.value.filter((item) => item !== name);
     await persistFrontendGroupOrder(order);
-    selectedGroup.value = order[0] || "";
-    selectedTargetIds.value = [];
+    if (selectedGroup.value === name) {
+      selectedGroup.value = order[0] || "";
+      selectedTargetIds.value = [];
+    }
     ElMessage.success("已删除");
   } catch (error) {
     if (error === "cancel" || error === "close") return;
@@ -408,26 +407,34 @@ async function startRollback(record: FrontendReleaseRecord) {
           allow-create
           default-first-option
           placeholder="选择或输入环境"
-          style="width: 220px"
+          style="width: 280px"
         >
-          <el-option v-for="groupName in groupOptions" :key="groupName" :label="groupName" :value="groupName" />
+          <el-option v-for="(groupName, index) in groupOptions" :key="groupName" :label="groupName" :value="groupName">
+            <div class="group-option">
+              <span class="group-option-name">{{ groupName }}</span>
+              <span class="group-option-actions" @mousedown.stop @click.stop>
+                <button
+                  type="button"
+                  class="opt-btn"
+                  :disabled="index <= 0"
+                  @click="moveFrontendGroup(groupName, -1)"
+                >
+                  上移
+                </button>
+                <button
+                  type="button"
+                  class="opt-btn"
+                  :disabled="index >= groupOptions.length - 1"
+                  @click="moveFrontendGroup(groupName, 1)"
+                >
+                  下移
+                </button>
+                <button type="button" class="opt-btn is-danger" @click="deleteEnvironment(groupName)">删除</button>
+              </span>
+            </div>
+          </el-option>
         </el-select>
         <el-button @click="addEnvironment">添加环境</el-button>
-        <el-button
-          type="danger"
-          plain
-          :disabled="!selectedGroup"
-          @click="deleteEnvironment"
-        >
-          删除
-        </el-button>
-        <el-button :disabled="frontendGroupIndex() <= 0" @click="moveFrontendGroup(-1)">上移</el-button>
-        <el-button
-          :disabled="frontendGroupIndex() < 0 || frontendGroupIndex() >= groupOptions.length - 1"
-          @click="moveFrontendGroup(1)"
-        >
-          下移
-        </el-button>
       </div>
     </div>
     <el-alert
@@ -668,6 +675,46 @@ async function startRollback(record: FrontendReleaseRecord) {
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
+}
+.group-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+}
+.group-option-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.group-option-actions {
+  display: none;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+}
+.group-option:hover .group-option-actions {
+  display: flex;
+}
+.opt-btn {
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--el-text-color-secondary);
+  cursor: pointer;
+}
+.opt-btn:hover:not(:disabled) {
+  color: var(--el-color-primary);
+}
+.opt-btn.is-danger:hover:not(:disabled) {
+  color: var(--el-color-danger);
+}
+.opt-btn:disabled {
+  cursor: default;
+  opacity: 0.35;
 }
 .deploy-options {
   display: flex;
