@@ -538,6 +538,52 @@ fn sh_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+/// 跳板机内网拷到 Windows 的脚本：必须走密码，不能开 BatchMode（否则 Permission denied）
+fn jump_intranet_copy_script(
+    payload_path: &str,
+    askpass_path: &str,
+    user_host: &str,
+    remote_path: &str,
+    port: u16,
+) -> String {
+    format!(
+        r#"#!/bin/sh
+SRC={src}
+ASKPASS={askpass}
+USERHOST={user_host}
+REMOTE={remote}
+PORT={port}
+OPTS='-F /dev/null -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1'
+if command -v sshpass >/dev/null 2>&1 && command -v scp >/dev/null 2>&1; then
+  SSHPASS=$(sh "$ASKPASS")
+  export SSHPASS
+  if sshpass -e scp -P "$PORT" $OPTS "$SRC" "$USERHOST:$REMOTE"; then exit 0; fi
+fi
+DISPLAY=${{DISPLAY:-:0}}
+export DISPLAY
+SSH_ASKPASS="$ASKPASS"
+export SSH_ASKPASS
+SSH_ASKPASS_REQUIRE=force
+export SSH_ASKPASS_REQUIRE
+if command -v scp >/dev/null 2>&1; then
+  if scp -P "$PORT" $OPTS "$SRC" "$USERHOST:$REMOTE" </dev/null; then exit 0; fi
+fi
+if command -v sftp >/dev/null 2>&1; then
+  if printf 'put %s %s\n' "$SRC" "$REMOTE" | sftp -P "$PORT" $OPTS "$USERHOST"; then exit 0; fi
+  echo "跳板机内网 sftp 到 Windows 仍失败" >&2
+  exit 1
+fi
+echo "跳板机缺少 scp/sftp，无法内网拷贝到 Windows" >&2
+exit 1
+"#,
+        src = sh_single_quote(payload_path),
+        askpass = sh_single_quote(askpass_path),
+        user_host = sh_single_quote(user_host),
+        remote = sh_single_quote(remote_path),
+        port = port,
+    )
+}
+
 fn windows_sftp_abs(path: &str) -> String {
     let normalized = to_sftp_path(path);
     if normalized.starts_with('/') {
@@ -642,47 +688,21 @@ pub async fn copy_jump_payload_to_windows(
 
     let tag = uuid::Uuid::new_v4().to_string();
     let askpass_path = format!("{}/askpass-{}.sh", staging.work_dir, tag);
-    let batch_path = format!("{}/batch-{}.txt", staging.work_dir, tag);
     let run_path = format!("{}/run-{}.sh", staging.work_dir, tag);
     let askpass = format!(
         "#!/bin/sh\nprintf '%s\\n' {}\n",
         sh_single_quote(password)
     );
-    let batch = format!("put {} {}\n", staging.payload_path, dest_abs);
-    let run_script = format!(
-        r#"#!/bin/sh
-set -e
-SRC={src}
-ASKPASS={askpass}
-BATCH={batch}
-USERHOST={user_host}
-REMOTE={remote}
-if command -v scp >/dev/null 2>&1; then
-  if scp -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$SRC" "$USERHOST:$REMOTE"; then
-    exit 0
-  fi
-fi
-if ! command -v sftp >/dev/null 2>&1; then
-  echo "跳板机缺少 scp/sftp，无法内网拷贝到 Windows" >&2
-  exit 1
-fi
-export DISPLAY="${{DISPLAY:-:0}}"
-export SSH_ASKPASS="$ASKPASS"
-export SSH_ASKPASS_REQUIRE=force
-sftp -oPreferredAuthentications=password -oPubkeyAuthentication=no \
-  -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null \
-  -b "$BATCH" "$USERHOST" </dev/null
-"#,
-        src = sh_single_quote(&staging.payload_path),
-        askpass = sh_single_quote(&askpass_path),
-        batch = sh_single_quote(&batch_path),
-        user_host = sh_single_quote(&user_host),
-        remote = sh_single_quote(&dest_abs),
+    let run_script = jump_intranet_copy_script(
+        &staging.payload_path,
+        &askpass_path,
+        &user_host,
+        &dest_abs,
+        target.server.port,
     );
 
     let sftp = open_sftp_handle(jump_handle, OsType::Linux).await?;
     sftp_write_all(&sftp, &askpass_path, askpass.as_bytes()).await?;
-    sftp_write_all(&sftp, &batch_path, batch.as_bytes()).await?;
     sftp_write_all(&sftp, &run_path, run_script.as_bytes()).await?;
     drop(sftp);
 
@@ -727,4 +747,63 @@ pub async fn upload_through_jump(
     let result = copy_jump_payload_to_windows(conn, &staging, conn, windows_remote_path).await;
     cleanup_jump_payload(conn, &staging).await;
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::jump_intranet_copy_script;
+
+    fn sample_script() -> String {
+        jump_intranet_copy_script(
+            "/tmp/shhd-deploy-x/payload.bin",
+            "/tmp/shhd-deploy-x/askpass.sh",
+            "hyin@172.16.48.5",
+            "/D:/stage/mch.zip",
+            22,
+        )
+    }
+
+    #[test]
+    fn intranet_copy_script_does_not_disable_password() {
+        let script = sample_script();
+        let lower = script.to_ascii_lowercase();
+        assert!(
+            !lower.contains("batchmode"),
+            "BatchMode 会禁止密码认证，跳板机 scp 会 Permission denied: {script}"
+        );
+        assert!(
+            !script.contains("sftp -b") && !script.contains("-b \"$BATCH\""),
+            "sftp -b 会隐含 BatchMode: {script}"
+        );
+    }
+
+    #[test]
+    fn intranet_copy_script_sends_password_and_skips_system_ssh_config() {
+        let script = sample_script();
+        assert!(script.contains("SSH_ASKPASS"), "必须用 SSH_ASKPASS 提供密码: {script}");
+        assert!(
+            script.contains("PreferredAuthentications=password"),
+            "必须指定密码认证: {script}"
+        );
+        assert!(script.contains("sshpass"), "有 sshpass 时应优先使用: {script}");
+        assert!(
+            script.contains("-F /dev/null"),
+            "应忽略系统 ssh_config，避免 GSSAPI 等未编译选项报错: {script}"
+        );
+        assert!(script.contains("PORT=22"), "必须带上目标端口: {script}");
+        assert!(script.contains("-P \"$PORT\""), "scp/sftp 必须传 -P: {script}");
+        assert!(script.contains("hyin@172.16.48.5"), "必须包含目标主机: {script}");
+    }
+
+    #[test]
+    fn intranet_copy_script_keeps_custom_port() {
+        let script = jump_intranet_copy_script(
+            "/tmp/p.bin",
+            "/tmp/askpass.sh",
+            "hyin@172.16.48.5",
+            "/D:/a.zip",
+            2222,
+        );
+        assert!(script.contains("PORT=2222"));
+    }
 }
