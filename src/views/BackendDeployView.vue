@@ -42,7 +42,6 @@ const selectedProjectIds = ref<string[]>([]);
 const featureName = ref("");
 const copyMode = ref<CopyMode>("upload");
 const deployMode = ref<DeployMode>("full");
-const backupSibling = ref(true);
 const stagedReleaseName = ref("");
 const deployNewerThan = ref<string | null>(todayIso());
 const ignoreRuleDraft = ref("");
@@ -107,9 +106,9 @@ function selectGroup(groupId: string) {
     (item) => item.id === groupId
   );
   if (group) {
-    // 默认全选项目
+    // 默认全选项目；备机同步每次进入组都默认 SSH 分发 zip
     selectedProjectIds.value = group.projects.map((project) => project.id);
-    copyMode.value = group.copyMode;
+    copyMode.value = "upload";
   }
   stagedReleaseName.value = "";
 }
@@ -183,11 +182,7 @@ async function startDeploy() {
   await ElMessageBox.confirm(
     `方式：${modeLabel}\n发布名称：${releaseName.value}\n项目：${projectNames}\n服务器（按顺序滚动）：${groupServerNames(
       selectedGroup.value
-    )}${
-      deployMode.value !== "stage" && backupSibling.value
-        ? `\n附加备份：应用目录 → 目录名-${datePrefix}`
-        : ""
-    }${dateFilterText}\n\n确认执行？`,
+    )}${dateFilterText}\n\n确认执行？`,
     "部署确认",
     { type: "warning", confirmButtonText: "执行" }
   );
@@ -198,7 +193,6 @@ async function startDeploy() {
       releaseName: releaseName.value,
       copyMode: copyMode.value,
       mode: deployMode.value,
-      backupSibling: deployMode.value !== "stage" && backupSibling.value,
       previewPaths: Object.keys(previewPaths.value).length > 0 ? previewPaths.value : undefined,
       newerThan: deployMode.value === "replace" ? undefined : deployNewerThan.value || "",
     });
@@ -224,7 +218,6 @@ async function replaceStaged(record: ReleaseRecord) {
       projectIds: record.projectIds,
       releaseName: record.releaseName,
       mode: "replace",
-      backupSibling: backupSibling.value,
     });
     activeTab.value = "deploy";
     await task.attach(taskId);
@@ -233,28 +226,103 @@ async function replaceStaged(record: ReleaseRecord) {
   }
 }
 
-async function startRollback(record: ReleaseRecord) {
-  await ElMessageBox.confirm(
-    `将把 ${record.groupName} 的以下项目恢复到「${record.releaseName}」发布前的备份：\n${record.projectIds.join(
-      "、"
-    )}\n\n确认回滚？`,
-    "回滚确认",
-    { type: "warning", confirmButtonText: "确认回滚" }
-  );
+function openRollbackDialog(record: ReleaseRecord) {
+  rollbackRecord.value = record;
+  const done = new Set(record.rolledBackProjectIds ?? []);
+  const remaining = record.projectIds.filter((projectId) => !done.has(projectId));
+  rollbackSelectedIds.value = remaining.length > 0 ? [...remaining] : [...record.projectIds];
+  rollbackDialogVisible.value = true;
+}
+
+async function confirmRollback() {
+  const record = rollbackRecord.value;
+  if (!record) return;
+  if (rollbackSelectedIds.value.length === 0) {
+    ElMessage.warning("请至少选择一个项目");
+    return;
+  }
+  rollbackDialogVisible.value = false;
   try {
-    const taskId = await api.startRollback(record.id);
+    const taskId = await api.startRollback(record.id, [...rollbackSelectedIds.value]);
     activeTab.value = "deploy";
     await task.attach(taskId);
+    await refreshReleases();
   } catch (error) {
     ElMessage.error(String(error));
   }
 }
 
+function rollbackProjectLabel(projectId: string): string {
+  const record = rollbackRecord.value;
+  if (!record) return projectId;
+  return releaseProjectName(record, projectId);
+}
+
+function releaseProjectName(record: ReleaseRecord, projectId: string): string {
+  const group = config.value?.backendGroups.find((item) => item.id === record.groupId);
+  return group?.projects.find((project) => project.id === projectId)?.name ?? projectId;
+}
+
+function releaseProjectLabels(record: ReleaseRecord): string {
+  return record.projectIds.map((projectId) => releaseProjectName(record, projectId)).join("、");
+}
+
+function isProjectRolledBack(record: ReleaseRecord | null, projectId: string): boolean {
+  if (!record) return false;
+  return (record.rolledBackProjectIds ?? []).includes(projectId);
+}
+
+function selectRollbackProjects(kind: "all" | "remaining") {
+  const record = rollbackRecord.value;
+  if (!record) return;
+  if (kind === "all") rollbackSelectedIds.value = [...record.projectIds];
+  else {
+    const done = new Set(record.rolledBackProjectIds ?? []);
+    rollbackSelectedIds.value = record.projectIds.filter((projectId) => !done.has(projectId));
+  }
+}
+
+const previewVisible = ref(false);
+const rollbackDialogVisible = ref(false);
+const rollbackRecord = ref<ReleaseRecord | null>(null);
+const rollbackSelectedIds = ref<string[]>([]);
+
 async function refreshReleases() {
   releases.value = await api.getReleases();
 }
 
-const previewVisible = ref(false);
+const historyGroupFilter = ref("all");
+
+const historyGroupOptions = computed(() => {
+  const options: { id: string; name: string }[] = [];
+  for (const group of config.value?.backendGroups ?? [])
+    options.push({ id: group.id, name: group.name });
+  for (const record of releases.value) {
+    if (!options.some((item) => item.id === record.groupId)) options.push({ id: record.groupId, name: record.groupName });
+  }
+  return options;
+});
+
+const visibleReleases = computed(() => {
+  if (historyGroupFilter.value === "all") return releases.value;
+  return releases.value.filter((record) => record.groupId === historyGroupFilter.value);
+});
+
+async function deleteReleaseRecord(record: ReleaseRecord) {
+  try {
+    await ElMessageBox.confirm(
+      `确认删除发布记录「${record.releaseName}」？删除后不可恢复，服务器上的备份目录不会自动清理。`,
+      "删除确认",
+      { type: "warning", confirmButtonText: "删除" }
+    );
+    await api.deleteRelease(record.id);
+    await refreshReleases();
+    ElMessage.success("已删除");
+  } catch (error) {
+    if (error === "cancel" || error === "close") return;
+    ElMessage.error(String(error));
+  }
+}
 const previewLoading = ref(false);
 const previewTab = ref("");
 const previewProjects = ref<ProjectPackPreview[]>([]);
@@ -408,6 +476,13 @@ function releaseStatusMeta(status: string): { label: string; type: "success" | "
   if (status === "rolled_back") return { label: "已回滚", type: "info" };
   if (status === "rollback") return { label: "回滚完成", type: "info" };
   return { label: "失败", type: "danger" };
+}
+
+function releaseRowStatusMeta(record: ReleaseRecord): { label: string; type: "success" | "warning" | "info" | "danger" } {
+  const rolledCount = (record.rolledBackProjectIds ?? []).length;
+  if (record.status === "success" && rolledCount > 0)
+    return { label: "部分回滚", type: "warning" };
+  return releaseStatusMeta(record.status);
 }
 
 // ===== 配置管理 =====
@@ -784,12 +859,6 @@ async function removeProject(project: BackendProject) {
             </el-radio-group>
           </el-form-item>
 
-          <el-form-item v-if="deployMode !== 'stage'" label="附加备份">
-            <el-checkbox v-model="backupSibling">
-              替换前把应用目录备份为 目录名-{{ datePrefix }}（当天已备份则跳过）
-            </el-checkbox>
-          </el-form-item>
-
           <el-form-item v-if="deployMode !== 'replace'" label="改动起始日">
             <el-date-picker
               v-model="deployNewerThan"
@@ -841,24 +910,33 @@ async function removeProject(project: BackendProject) {
       </el-tab-pane>
 
       <el-tab-pane label="发布历史 / 回滚" name="history">
-        <div style="margin-bottom: 10px">
+        <div style="margin-bottom: 10px; display: flex; gap: 8px; align-items: center">
+          <el-select v-model="historyGroupFilter" placeholder="全部负载组" style="width: 240px">
+            <el-option label="全部负载组" value="all" />
+            <el-option
+              v-for="group in historyGroupOptions"
+              :key="group.id"
+              :label="group.name"
+              :value="group.id"
+            />
+          </el-select>
           <el-button size="small" @click="refreshReleases">刷新</el-button>
         </div>
-        <el-table :data="releases" stripe>
+        <el-table :data="visibleReleases" stripe>
           <el-table-column prop="releaseName" label="发布名称" min-width="200" />
           <el-table-column prop="groupName" label="负载组" width="170" />
           <el-table-column label="项目" min-width="180">
-            <template #default="{ row }">{{ row.projectIds.join("、") }}</template>
+            <template #default="{ row }">{{ releaseProjectLabels(row) }}</template>
           </el-table-column>
           <el-table-column prop="createdAt" label="时间" width="165" />
           <el-table-column label="状态" width="120">
             <template #default="{ row }">
-              <el-tag :type="releaseStatusMeta(row.status).type">
-                {{ releaseStatusMeta(row.status).label }}
+              <el-tag :type="releaseRowStatusMeta(row).type">
+                {{ releaseRowStatusMeta(row).label }}
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="130" fixed="right">
+          <el-table-column label="操作" width="200" fixed="right">
             <template #default="{ row }">
               <el-button
                 v-if="row.status === 'staged'"
@@ -876,9 +954,18 @@ async function removeProject(project: BackendProject) {
                 type="warning"
                 plain
                 :disabled="task.running.value"
-                @click="startRollback(row)"
+                @click="openRollbackDialog(row)"
               >
                 回滚
+              </el-button>
+              <el-button
+                size="small"
+                type="danger"
+                plain
+                :disabled="task.running.value"
+                @click="deleteReleaseRecord(row)"
+              >
+                删除
               </el-button>
             </template>
           </el-table-column>
@@ -950,7 +1037,7 @@ async function removeProject(project: BackendProject) {
                 <el-radio value="upload">SSH 分发 zip</el-radio>
                 <el-radio value="smb">内网 SMB 复制</el-radio>
               </el-radio-group>
-              <span class="form-hint">SSH 分发只传压缩包，走跳板机内网拷到各 Windows，无需配置 D$。SMB 才需要管理共享。</span>
+              <span class="form-hint">默认 SSH 分发 zip：只传压缩包，走跳板机内网拷到各 Windows，无需配置 D$。SMB 才需要管理共享。</span>
             </el-form-item>
             <el-form-item>
               <el-button type="primary" @click="persistConfig">保存组配置</el-button>
@@ -993,6 +1080,51 @@ async function removeProject(project: BackendProject) {
         </template>
       </el-tab-pane>
     </el-tabs>
+
+    <el-dialog v-model="rollbackDialogVisible" title="选择要回滚的项目" width="560px">
+      <p v-if="rollbackRecord" class="form-hint" style="margin-left: 0; margin-bottom: 12px">
+        将把「{{ rollbackRecord.groupName }}」中勾选的项目恢复到「{{ rollbackRecord.releaseName }}」发布前的备份，可只选其中若干个。
+      </p>
+      <div style="margin-bottom: 10px">
+        <el-button size="small" @click="selectRollbackProjects('all')">全选</el-button>
+        <el-button
+          v-if="rollbackRecord && (rollbackRecord.rolledBackProjectIds ?? []).length"
+          size="small"
+          @click="selectRollbackProjects('remaining')"
+        >
+          只选未回滚
+        </el-button>
+      </div>
+      <el-checkbox-group v-if="rollbackRecord" v-model="rollbackSelectedIds">
+        <div
+          v-for="projectId in rollbackRecord.projectIds"
+          :key="projectId"
+          class="project-row"
+        >
+          <el-checkbox :value="projectId">
+            <b>{{ rollbackProjectLabel(projectId) }}</b>
+            <el-tag
+              v-if="isProjectRolledBack(rollbackRecord, projectId)"
+              size="small"
+              type="info"
+              style="margin-left: 8px"
+            >
+              已回滚
+            </el-tag>
+          </el-checkbox>
+        </div>
+      </el-checkbox-group>
+      <template #footer>
+        <el-button @click="rollbackDialogVisible = false">取消</el-button>
+        <el-button
+          type="warning"
+          :disabled="rollbackSelectedIds.length === 0 || task.running.value"
+          @click="confirmRollback"
+        >
+          确认回滚
+        </el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog
       v-model="projectDialogVisible"

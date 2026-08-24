@@ -195,7 +195,7 @@ fn tool_definitions(permission: McpPermission) -> Vec<Value> {
         }),
         json!({
             "name": "list_releases",
-            "description": "查看最近的后端发布历史。status：staged=待替换，success=已替换可回滚，rolled_back=已回滚，rollback=回滚完成记录，failed=失败。回滚请用 success 记录的 releaseId 调 rollback。",
+            "description": "查看最近的后端发布历史。status：staged=待替换，success=已替换可回滚（含部分回滚），rolled_back=已全部回滚，rollback=回滚完成记录，failed=失败。rolledBackProjectIds 表示已回滚过的项目。回滚请用 success 记录的 releaseId 调 rollback，可用 projectIds 只回其中部分项目。",
             "inputSchema": { "type": "object", "properties": {} },
             "annotations": read_only.clone()
         }),
@@ -241,8 +241,7 @@ fn tool_definitions(permission: McpPermission) -> Vec<Value> {
                     "groupId": { "type": "string", "description": "负载组 id（list_config 获取）" },
                     "projectIds": { "type": "array", "items": { "type": "string" }, "description": "项目 id 列表，缺省为组内全部项目" },
                     "releaseName": { "type": "string", "description": "发布名称，格式 yyyyMMdd-功能名，如 20260812-优惠券功能；replace 模式填已中转的发布名" },
-                    "mode": { "type": "string", "enum": ["full", "stage", "replace"], "default": "stage" },
-                    "backupSibling": { "type": "boolean", "description": "替换前把应用目录备份为 目录名-日期", "default": true }
+                    "mode": { "type": "string", "enum": ["full", "stage", "replace"], "default": "stage" }
                 },
                 "required": ["groupId", "releaseName"]
             },
@@ -267,10 +266,17 @@ fn tool_definitions(permission: McpPermission) -> Vec<Value> {
     if permission == McpPermission::Full {
         tools.push(json!({
             "name": "rollback",
-            "description": "回滚一次后端发布：执行停止脚本后恢复替换前备份的目录并做健康检查。releaseId 从 list_releases 获取（仅 success 状态可回滚）。返回 taskId，请用 get_task_status 轮询。",
+            "description": "回滚一次后端发布：执行停止脚本后恢复替换前备份的目录并做健康检查。releaseId 从 list_releases 获取（仅 success 状态可回滚）。可选 projectIds 只回滚其中部分项目，省略则回滚该次发布的全部项目。返回 taskId，请用 get_task_status 轮询。",
             "inputSchema": {
                 "type": "object",
-                "properties": { "releaseId": { "type": "string", "description": "list_releases 返回的发布 ID" } },
+                "properties": {
+                    "releaseId": { "type": "string", "description": "list_releases 返回的发布 ID" },
+                    "projectIds": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "要回滚的项目 id（list_config / list_releases 获取）。省略或空列表 = 该次发布的全部项目"
+                    }
+                },
                 "required": ["releaseId"]
             },
             "annotations": write_destructive.clone()
@@ -484,10 +490,6 @@ async fn call_tool(app: &AppHandle, tool_name: &str, arguments: Value) -> Result
             if project_ids.is_empty() {
                 project_ids = group.projects.iter().map(|project| project.id.clone()).collect();
             }
-            let backup_sibling = arguments
-                .get("backupSibling")
-                .and_then(|value| value.as_bool())
-                .unwrap_or(true);
 
             let request = BackendDeployRequest {
                 group_id,
@@ -495,7 +497,6 @@ async fn call_tool(app: &AppHandle, tool_name: &str, arguments: Value) -> Result
                 release_name,
                 copy_mode: None,
                 mode,
-                backup_sibling,
                 preview_paths: Default::default(),
                 newer_than: Some(chrono::Local::now().format("%Y-%m-%d").to_string()),
             };
@@ -550,7 +551,13 @@ async fn call_tool(app: &AppHandle, tool_name: &str, arguments: Value) -> Result
                 return Err("回滚需要 MCP「完全访问」权限".into());
             }
             let release_id = arg_str(&arguments, "releaseId").ok_or("缺少参数 releaseId")?;
-            let task_id = crate::launch_rollback(app, release_id).await;
+            let project_ids = arg_str_list(&arguments, "projectIds");
+            let project_ids = if project_ids.is_empty() {
+                None
+            } else {
+                Some(project_ids)
+            };
+            let task_id = crate::launch_rollback(app, release_id, project_ids).await;
             Ok(format!(
                 "回滚任务已启动，taskId: {}。请调用 get_task_status 轮询结果。",
                 task_id

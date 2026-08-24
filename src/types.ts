@@ -253,6 +253,8 @@ export interface ReleaseRecord {
   serverIds: string[];
   createdAt: string;
   status: string;
+  /** 已从该次发布回滚过的项目 id（部分回滚时累计） */
+  rolledBackProjectIds?: string[];
 }
 
 /** 前端发布历史一条 */

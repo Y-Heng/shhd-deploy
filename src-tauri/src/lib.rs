@@ -272,16 +272,26 @@ pub(crate) async fn launch_backend_deploy(app: &AppHandle, request: BackendDeplo
     task_id
 }
 
-/// 启动回滚任务（界面与 MCP 共用）
-pub(crate) async fn launch_rollback(app: &AppHandle, release_id: String) -> String {
+/// 启动回滚任务（界面与 MCP 共用）。project_ids 为空则回滚该次发布的全部项目。
+pub(crate) async fn launch_rollback(
+    app: &AppHandle,
+    release_id: String,
+    project_ids: Option<Vec<String>>,
+) -> String {
     let state: State<AppState> = app.state();
     let (task_id, cancel) = register_task(&state).await;
     let logger = TaskLogger::new(app.clone(), task_id.clone(), state.task_registry.clone());
     let config = state.config.read().await.clone();
     let tasks = state.tasks.clone();
     tauri::async_runtime::spawn(async move {
-        let result =
-            deploy_backend::run_rollback(config, release_id, logger.clone(), cancel.clone()).await;
+        let result = deploy_backend::run_rollback(
+            config,
+            release_id,
+            project_ids,
+            logger.clone(),
+            cancel.clone(),
+        )
+        .await;
         finish_task(tasks, logger, cancel, result).await;
     });
     task_id
@@ -373,10 +383,14 @@ async fn start_backend_deploy(
     Ok(launch_backend_deploy(&app, request).await)
 }
 
-/// 从前端发起后端回滚
+/// 从前端发起后端回滚。project_ids 为空则回滚该次发布的全部项目。
 #[tauri::command]
-async fn start_rollback(app: AppHandle, release_id: String) -> Result<String, String> {
-    Ok(launch_rollback(&app, release_id).await)
+async fn start_rollback(
+    app: AppHandle,
+    release_id: String,
+    project_ids: Option<Vec<String>>,
+) -> Result<String, String> {
+    Ok(launch_rollback(&app, release_id, project_ids).await)
 }
 
 /// 读取后端发布历史
@@ -389,6 +403,18 @@ fn get_releases() -> Vec<ReleaseRecord> {
 #[tauri::command]
 fn get_frontend_releases() -> Vec<FrontendReleaseRecord> {
     deploy_frontend::load_frontend_releases()
+}
+
+/// 删除一条后端发布历史
+#[tauri::command]
+fn delete_release(release_id: String) -> Result<(), String> {
+    deploy_backend::delete_release(&release_id).map_err(|error| error.to_string())
+}
+
+/// 删除一条前端发布历史
+#[tauri::command]
+fn delete_frontend_release(release_id: String) -> Result<(), String> {
+    deploy_frontend::delete_frontend_release(&release_id).map_err(|error| error.to_string())
 }
 
 /// 从前端发起前端部署
@@ -917,6 +943,8 @@ pub fn run() {
             start_rollback,
             get_releases,
             get_frontend_releases,
+            delete_release,
+            delete_frontend_release,
             start_frontend_deploy,
             start_frontend_rollback,
             start_docker_deploy,

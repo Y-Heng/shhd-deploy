@@ -44,9 +44,6 @@ pub struct BackendDeployRequest {
     /// 部署模式
     #[serde(default = "default_deploy_mode")]
     pub mode: DeployMode,
-    /// 替换前把应用目录复制为 <目录名>-yyyyMMdd（当天已存在则跳过）
-    #[serde(default)]
-    pub backup_sibling: bool,
     /// 预览勾选确认后的精确文件列表（相对路径，按项目）。有则只打包这些文件。
     #[serde(default)]
     pub preview_paths: HashMap<String, Vec<String>>,
@@ -67,6 +64,9 @@ pub struct ReleaseRecord {
     pub server_ids: Vec<String>,
     pub created_at: String,
     pub status: String,
+    /// 已从该次发布回滚过的项目 id（部分回滚时累计，全部回完后原记录标为 rolled_back）
+    #[serde(default)]
+    pub rolled_back_project_ids: Vec<String>,
 }
 
 /// 读取发布历史（文件不存在则空列表）
@@ -114,29 +114,90 @@ fn mark_release_success(group_id: &str, release_name: &str) -> bool {
     found
 }
 
-/// 回滚成功后：原发布标为已回滚，并追加一条回滚记录
-fn record_rollback(source: &ReleaseRecord) {
+/// 把本次实际回滚的项目记入历史：部分回滚时原记录仍可继续回滚其余项目
+fn record_rollback(source: &ReleaseRecord, rolled_project_ids: &[String]) {
     let mut records = load_releases();
     for record in records.iter_mut() {
         if record.id == source.id && record.status == "success" {
-            record.status = "rolled_back".into();
+            for project_id in rolled_project_ids {
+                if !record.rolled_back_project_ids.contains(project_id) { record.rolled_back_project_ids.push(project_id.clone()); }
+            }
+            let all_rolled_back = record
+                .project_ids
+                .iter()
+                .all(|project_id| record.rolled_back_project_ids.contains(project_id));
+            if all_rolled_back { record.status = "rolled_back".into(); }
         }
     }
+    let is_partial = rolled_project_ids.len() < source.project_ids.len();
+    let release_name = if is_partial {
+        format!("回滚 {}（部分）", source.release_name)
+    } else {
+        format!("回滚 {}", source.release_name)
+    };
     records.insert(
         0,
         ReleaseRecord {
             id: uuid::Uuid::new_v4().to_string(),
-            release_name: format!("回滚 {}", source.release_name),
+            release_name,
             group_id: source.group_id.clone(),
             group_name: source.group_name.clone(),
-            project_ids: source.project_ids.clone(),
+            project_ids: rolled_project_ids.to_vec(),
             server_ids: source.server_ids.clone(),
             created_at: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
             status: "rollback".into(),
+            rolled_back_project_ids: vec![],
         },
     );
     records.truncate(100);
     persist_releases(&records);
+}
+
+/// 删除一条后端发布历史（不影响服务器上的备份目录）
+pub fn delete_release(release_id: &str) -> Result<()> {
+    let mut records = load_releases();
+    let before = records.len();
+    records.retain(|record| record.id != release_id);
+    if records.len() == before { bail!("找不到该发布记录"); }
+    persist_releases(&records);
+    Ok(())
+}
+
+/// 解析本次要回滚的项目：空列表表示该次发布的全部项目
+fn selected_rollback_projects(
+    record: &ReleaseRecord,
+    group: &BackendGroup,
+    requested: Option<Vec<String>>,
+) -> Result<Vec<BackendProject>> {
+    let selected_ids: Vec<String> = match requested {
+        Some(ids) if !ids.is_empty() => ids,
+        _ => record.project_ids.clone(),
+    };
+    let unknown: Vec<String> = selected_ids
+        .iter()
+        .filter(|project_id| !record.project_ids.contains(project_id))
+        .cloned()
+        .collect();
+    if !unknown.is_empty() {
+        bail!(
+            "以下项目不在该次发布中，无法回滚：{}",
+            unknown.join("、")
+        );
+    }
+    let mut projects = Vec::new();
+    let mut missing = Vec::new();
+    for project_id in &selected_ids {
+        match group
+            .projects
+            .iter()
+            .find(|project| project.id == *project_id)
+        {
+            Some(project) => projects.push(project.clone()),
+            None => missing.push(project_id.clone()),
+        }
+    }
+    if !missing.is_empty() { bail!("以下项目在当前配置中不存在：{}", missing.join("、")); }
+    Ok(projects)
 }
 
 /// 从远程应用目录推导相对站点路径：D:\code\sites\to\service\rest -> to\service\rest
@@ -174,6 +235,7 @@ fn project_staging_dir(group: &BackendGroup, release_name: &str, project: &Backe
     project_pack_dir(&win_join(&group.staging_dir, release_name), project)
 }
 
+/// 替换前备份位置：负载组指定的备份目录 \ 发布名 \ 项目相对路径
 fn project_backup_dir(group: &BackendGroup, release_name: &str, project: &BackendProject) -> String {
     project_pack_dir(&win_join(&group.backup_dir, release_name), project)
 }
@@ -789,48 +851,19 @@ async fn deploy_to_server(
     group: &BackendGroup,
     project: &BackendProject,
     release_name: &str,
-    backup_sibling: bool,
-    date_suffix: &str,
     logger: &TaskLogger,
 ) -> Result<()> {
     let live_dir = project_live_dir(project);
     let staging_dir = project_staging_dir(group, release_name, project);
     let backup_dir = project_backup_dir(group, release_name, project);
-    let sibling_dir = format!(
-        "{}-{}",
-        project.remote_app_dir.trim_end_matches('\\'),
-        date_suffix
-    );
 
     logger.info(format!(
         "[{}] 部署 {}: 覆盖 {}（不删除线上其它文件）",
         conn.server.name, project.name, live_dir
     ));
 
-    let sibling_block = if backup_sibling {
-        format!(
-            r#"
-if ($actionExit -eq 0) {{
-  $targetDir = '{target_dir}'
-  $siblingDir = '{sibling_dir}'
-  if (-not (Test-Path -LiteralPath $targetDir)) {{ Write-Output '目录不存在，跳过日期备份' }}
-  elseif (Test-Path -LiteralPath $siblingDir) {{ Write-Output ('今日备份已存在(' + $siblingDir + ')，跳过') }}
-  else {{
-    robocopy $targetDir $siblingDir /E /R:2 /W:3 /NP /NFL /NDL | Out-Null
-    if ($LASTEXITCODE -ge 8) {{ Write-Output '日期备份失败'; $actionExit = 2 }}
-    else {{ Write-Output ('目录已备份 -> ' + $siblingDir) }}
-  }}
-}}
-"#,
-            target_dir = project.remote_app_dir.replace('\'', "''"),
-            sibling_dir = sibling_dir.replace('\'', "''"),
-        )
-    } else {
-        String::new()
-    };
-
     let inner = format!(
-        r#"{sibling_block}
+        r#"
 if ($actionExit -eq 0) {{
   if (-not (Test-Path -LiteralPath '{staging_dir}')) {{ Write-Output '暂存目录不存在'; $actionExit = 4 }}
   else {{
@@ -849,7 +882,6 @@ if ($actionExit -eq 0) {{
   }}
 }}
 "#,
-        sibling_block = sibling_block,
         staging_dir = staging_dir.replace('\'', "''"),
         live_dir = live_dir.replace('\'', "''"),
         backup_dir = backup_dir.replace('\'', "''"),
@@ -1082,7 +1114,6 @@ pub async fn run_backend_deploy(
             &servers,
             None,
             request.mode,
-            request.backup_sibling,
             &logger,
             &cancel,
         )
@@ -1389,6 +1420,7 @@ if (Test-Path $uploadDir) {{ Remove-Item -LiteralPath $uploadDir -Recurse -Force
             server_ids: servers.iter().map(|server| server.id.clone()).collect(),
             created_at: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
             status: "staged".into(),
+            rolled_back_project_ids: vec![],
         });
         logger.progress(100.0, "完成");
         logger.success(format!(
@@ -1407,7 +1439,6 @@ if (Test-Path $uploadDir) {{ Remove-Item -LiteralPath $uploadDir -Recurse -Force
         &servers,
         Some(first_conn),
         request.mode,
-        request.backup_sibling,
         &logger,
         &cancel,
     )
@@ -1424,11 +1455,9 @@ async fn replace_phase(
     servers: &[ServerConfig],
     first_conn: Option<SshConnection>,
     mode: DeployMode,
-    backup_sibling: bool,
     logger: &TaskLogger,
     cancel: &CancellationToken,
 ) -> Result<()> {
-    let date_suffix = chrono::Local::now().format("%Y%m%d").to_string();
     let mut deployed_servers: Vec<String> = Vec::new();
     let total = servers.len().max(1);
     let mut first_conn = first_conn;
@@ -1451,8 +1480,6 @@ async fn replace_phase(
                 group,
                 project,
                 release_name,
-                backup_sibling,
-                &date_suffix,
                 logger,
             )
             .await?;
@@ -1472,6 +1499,7 @@ async fn replace_phase(
             server_ids: deployed_servers,
             created_at: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
             status: "success".into(),
+            rolled_back_project_ids: vec![],
         });
     }
 
@@ -1480,10 +1508,11 @@ async fn replace_phase(
     Ok(())
 }
 
-/// 回滚：从备份目录恢复 bin 并健康检查
+/// 回滚：从备份目录恢复 bin 并健康检查。project_ids 为空则回滚该次发布的全部项目。
 pub async fn run_rollback(
     config: AppConfig,
     release_id: String,
+    project_ids: Option<Vec<String>>,
     logger: TaskLogger,
     cancel: CancellationToken,
 ) -> Result<()> {
@@ -1491,26 +1520,23 @@ pub async fn run_rollback(
         .into_iter()
         .find(|record| record.id == release_id)
         .with_context(|| "找不到该发布记录")?;
+    if record.status != "success" { bail!("只有成功的发布才能回滚（当前状态: {}）", record.status); }
     let group = config
         .backend_groups
         .iter()
         .find(|group| group.id == record.group_id)
         .with_context(|| format!("找不到负载组: {}（配置可能已修改）", record.group_id))?
         .clone();
-    let projects: Vec<BackendProject> = group
-        .projects
-        .iter()
-        .filter(|project| record.project_ids.contains(&project.id))
-        .cloned()
-        .collect();
-    if projects.is_empty() {
-        bail!("发布记录中的项目在当前配置中不存在");
-    }
+    let projects = selected_rollback_projects(&record, &group, project_ids)?;
+    let project_names: Vec<&str> = projects.iter().map(|project| project.name.as_str()).collect();
+    let is_partial = projects.len() < record.project_ids.len();
 
     logger.state("running", format!("回滚 {}", record.release_name));
     logger.warn(format!(
-        "开始回滚发布 {}（恢复替换前备份）",
-        record.release_name
+        "开始回滚发布 {}（{}：{}）",
+        record.release_name,
+        if is_partial { "部分项目" } else { "全部项目" },
+        project_names.join("、")
     ));
 
     for (server_index, server_id) in record.server_ids.iter().enumerate() {
@@ -1546,8 +1572,13 @@ else {{
         logger.success(format!("服务器 {} 回滚完成", server.name));
     }
 
+    let rolled_project_ids: Vec<String> = projects.iter().map(|project| project.id.clone()).collect();
     logger.progress(100.0, "完成");
-    record_rollback(&record);
-    logger.success(format!("回滚 {} 完成", record.release_name));
+    record_rollback(&record, &rolled_project_ids);
+    logger.success(format!(
+        "回滚 {} 完成（{}）",
+        record.release_name,
+        project_names.join("、")
+    ));
     Ok(())
 }

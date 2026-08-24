@@ -85,11 +85,11 @@ onMounted(async () => {
           <ul>
             <li>产物超过 24 小时会警告，防止发旧包。</li>
             <li>滚动发布：主服务器替换并健康检查通过后才动备机，线上始终有一台在服务。</li>
-            <li>替换前自动备份目标目录；「附加备份」勾选后还会把整个应用目录复制成 <code>目录名-日期</code>。本地与线上目录一比一覆盖，不删除线上其它文件。项目里可配置忽略规则和白名单（可直接选文件/文件夹，也可复制逗号分隔规则复用）。部署时按「改动起始日」只上传该日及之后改过的文件，每次进入部署页默认今天。部署前可点「预览文件」，按修改时间从新到旧勾选；忽略规则匹配的文件浅色排在后面、默认折叠，勾上后本次会上传。</li>
+            <li>替换前自动把目标目录备份到负载组配置的「备份目录」（按发布名分开放，回滚从这里恢复）。本地与线上目录一比一覆盖，不删除线上其它文件。项目里可配置忽略规则和白名单（可直接选文件/文件夹，也可复制逗号分隔规则复用）。部署时按「改动起始日」只上传该日及之后改过的文件，每次进入部署页默认今天。部署前可点「预览文件」，按修改时间从新到旧勾选；忽略规则匹配的文件浅色排在后面、默认折叠，勾上后本次会上传。</li>
             <li>替换/回滚可自定义停止、启动脚本。默认提供 <b>IIS</b>（只停物理路径匹配到的站点或程序池，不停整个 IIS）和 <b>Java</b>（只停对应 Windows 服务）两套方案，可在项目配置里改。</li>
-            <li>出问题到「发布历史」点<b>回滚</b>，一键恢复替换前的 bin。回滚成功后原记录会标成「已回滚」，并新增一条「回滚完成」记录。</li>
+            <li>出问题到「发布历史」点<b>回滚</b>，勾选要恢复的项目（默认同组未回滚的项目，可只选其中一个或多个）。回滚从备份目录恢复 bin 并做健康检查。全部项目都回完后原记录标成「已回滚」；只回一部分时原记录为「部分回滚」，还可继续回其余项目。历史可按负载组筛选，不需要的记录可删除（只删本机记录，服务器备份目录需自行清理）。</li>
           </ul>
-          <p><b>备机同步（推荐 SSH 分发 zip）</b>：zip 只经公网上传到跳板机一次，再内网拷到组内各 Windows 解压，不需要配置 <code>D$</code>。SMB 是把已解压的整棵目录从主服务器 robocopy 到备机，小文件多时往往更慢，还要开管理共享。</p>
+          <p><b>备机同步（默认 SSH 分发 zip）</b>：zip 只经公网上传到跳板机一次，再内网拷到组内各 Windows 解压，不需要配置 <code>D$</code>。SMB 是把已解压的整棵目录从主服务器 robocopy 到备机，小文件多时往往更慢，还要开管理共享。</p>
           <p><b>推荐节奏</b>：本地发布产物 → 「仅上传到中转」→ 通知相关人 → 低峰「执行替换」→ 验证 → 有问题立即回滚。</p>
         </div>
       </el-collapse-item>
@@ -97,7 +97,7 @@ onMounted(async () => {
       <el-collapse-item title="六、前端部署 / Docker 部署" name="frontend">
         <div class="help-body">
           <ul>
-            <li><b>前端部署</b>：本地 dist 打包后一次上传到服务器再解压，避免逐文件 SFTP。项目按<b>开发环境 / 正式环境</b>分组，顶部切换环境后再部署，避免发错。直接替换或从中转替换时会做发布前快照，可在「发布历史」点<b>回滚</b>恢复。Windows / Linux 都能部署。同样支持「仅上传到中转」和「从中转替换」。</li>
+            <li><b>前端部署</b>：本地 dist 打包后一次上传到服务器再解压，避免逐文件 SFTP。项目按环境分组（默认有开发 / 正式，也可「添加环境」或在项目里输入新名称），顶部切换环境后再部署，避免发错。直接替换或从中转替换时会做发布前快照，可在「发布历史」点<b>回滚</b>恢复。历史可按环境筛选，记录可删除。Windows / Linux 都能部署。同样支持「仅上传到中转」和「从中转替换」。</li>
             <li><b>Docker 部署</b>：点「执行」按配置顺序跑 compose 命令，输出实时回显。目标可分组，双击分组名称即可改名。</li>
             <li>新增前端项目：「前端部署 → 添加项目」，填本地 dist 目录和服务器 nginx 目录即可。</li>
           </ul>
@@ -131,11 +131,11 @@ onMounted(async () => {
           <p><b>工具说明：</b></p>
           <ul>
             <li><code>list_config</code>：查看可部署目标（负载组/项目/前端/Docker/服务器），不含密码。部署前先调它拿 id。</li>
-            <li><code>backend_deploy</code>：必填 <code>groupId</code>、<code>releaseName</code>（格式 <code>yyyyMMdd-功能名</code>）。可选 <code>projectIds</code>、<code>mode</code>、<code>backupSibling</code>。返回 <code>taskId</code>。</li>
+            <li><code>backend_deploy</code>：必填 <code>groupId</code>、<code>releaseName</code>（格式 <code>yyyyMMdd-功能名</code>）。可选 <code>projectIds</code>、<code>mode</code>。返回 <code>taskId</code>。替换前备份到负载组的备份目录。</li>
             <li><code>frontend_deploy</code>：必填 <code>targetIds</code>。可选 <code>mode</code>、<code>backupSibling</code>。</li>
             <li><code>get_task_status</code>：必填 <code>taskId</code>。建议 <code>waitSeconds=60</code> 轮询，直到 <code>state</code> 为 <code>success</code> / <code>failed</code> / <code>cancelled</code>（最长 300 秒）。</li>
-            <li><code>list_releases</code> / <code>list_frontend_releases</code>：最近发布历史；回滚用这里的 <code>releaseId</code>。</li>
-            <li><code>rollback</code> / <code>frontend_rollback</code>：回滚一次发布（需完全访问）。后端仅 <code>success</code> 可回滚；前端还需带 <code>backupSuffix</code>。</li>
+            <li><code>list_releases</code> / <code>list_frontend_releases</code>：最近发布历史；回滚用这里的 <code>releaseId</code>。后端记录里的 <code>rolledBackProjectIds</code> 是已回过的项目。</li>
+            <li><code>rollback</code> / <code>frontend_rollback</code>：回滚一次发布（需完全访问）。后端仅 <code>success</code> 可回滚，可选 <code>projectIds</code> 只回其中部分项目；前端还需带 <code>backupSuffix</code>。</li>
             <li><code>docker_deploy</code>：按目标配置顺序执行 compose 命令（需完全访问）。</li>
             <li><code>list_tunnels</code> / <code>tunnel_control</code>：查看或启停隧道（启停需完全访问）。</li>
           </ul>
@@ -167,7 +167,7 @@ onMounted(async () => {
             <li><b>替换提示文件被占用</b>：到「项目配置」填入 IIS 或 Java 停止/启动脚本。IIS 方案只停本项目站点/程序池；Java 方案请改成实际 Windows 服务名。SSH 账号需要有管理对应服务的权限。</li>
             <li><b>健康检查一直失败</b>：到「后端部署 → 项目配置」核对健康检查地址（必须是服务器本机可访问的 localhost 地址）。</li>
             <li><b>SMB 复制失败 / robocopy 退出码 16</b>：主服务器用管理共享（如 <code>\\备机IP\D$</code>）把中转目录拷到备机。推荐改用「SSH 分发 zip」，不需要 D$。若仍用 SMB，请在备机设 <code>LocalAccountTokenFilterPolicy=1</code> 并放行 445，再到主服务器用 <code>net use \\备机IP\D$</code> 自测。</li>
-            <li><b>日期备份目录越积越多</b>：目前不自动清理，请定期手动删除服务器上的 <code>目录名-日期</code> 旧备份。</li>
+            <li><b>备份目录越积越多</b>：目前不自动清理，请定期手动删除服务器备份目录里过期的发布备份。</li>
             <li><b>换电脑</b>：旧电脑导出配置 → 新电脑导入，再把配置里的本地路径改成新电脑的路径。</li>
             <li><b>想改分组名</b>：在服务器 / 隧道 / Docker 部署页双击分组名称；「未分组」请通过编辑条目指定新分组。</li>
             <li><b>Cursor 看不到 MCP 工具</b>：确认本工具正在运行且设置里 MCP 为「运行中」；<code>mcp.json</code> 端口与设置一致；在 Cursor 刷新 MCP。权限为只读时，部署类工具本来就不会出现。</li>

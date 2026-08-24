@@ -45,11 +45,11 @@
 工具要点：
 
 - **list_config**：拿负载组 / 项目 / 前端 / Docker 的 id。部署前先调。
-- **backend_deploy**：必填 `groupId`、`releaseName`（`yyyyMMdd-功能名`）。可选 `projectIds`、`mode`、`backupSibling`。返回 `taskId`。
+- **backend_deploy**：必填 `groupId`、`releaseName`（`yyyyMMdd-功能名`）。可选 `projectIds`、`mode`。返回 `taskId`。替换前备份到负载组配置的备份目录。
 - **frontend_deploy**：必填 `targetIds`。可选 `mode`、`backupSibling`。
 - **get_task_status**：必填 `taskId`。建议 `waitSeconds=60` 轮询到 `success` / `failed` / `cancelled`（最长 300 秒）。
 - **list_releases / list_frontend_releases**：最近发布历史；回滚用 `releaseId`。
-- **rollback**：后端回滚，仅 `success` 记录可回滚。
+- **rollback**：后端回滚，仅 `success` 记录可回滚。可选 `projectIds` 只回其中部分项目，省略则全部回滚。
 - **frontend_rollback**：前端回滚，需 `success` 且带 `backupSuffix`。
 - **docker_deploy**：按目标配置顺序执行命令。
 - **list_tunnels / tunnel_control**：查看或启停隧道。
@@ -137,7 +137,7 @@ New-NetFirewallRule -Name sshd-lan -DisplayName 'OpenSSH Server (LAN only)' `
 2. 每个项目的 bin 压缩为 zip；有跳板机时先传到 Linux 跳板机一次，再内网拷到组内各 Windows 解压（不依赖 `D$`）。也可改用主服务器 SMB/`robocopy` 到备机。
 3. 服务器端解压，目录结构与你手工习惯一致：`D:\code\sites\devlop\20260812-功能名\to\service\rest\bin`。
 4. 逐台执行：备份当前 bin 到 `备份目录\发布名\` → robocopy /MIR 替换 → 本机健康检查通过 → 才处理下一台（线上始终有一台在服务）。
-5. 任何一步失败立即停止；「发布历史」页可一键回滚（从备份恢复 + 健康检查）。
+5. 任何一步失败立即停止；「发布历史」可按负载组查看、回滚（可只勾选其中若干项目）或删除记录。
 
 ## 安全说明
 

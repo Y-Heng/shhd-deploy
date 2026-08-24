@@ -35,7 +35,6 @@ export const api = {
     releaseName: string;
     copyMode?: CopyMode | null;
     mode?: DeployMode;
-    backupSibling?: boolean;
     previewPaths?: Record<string, string[]>;
     newerThan?: string | null;
   }) => invoke<string>("start_backend_deploy", { request }),
@@ -49,11 +48,15 @@ export const api = {
       projectIds,
       newerThan,
     }),
-  startRollback: (releaseId: string) =>
-    invoke<string>("start_rollback", { releaseId }),
+  startRollback: (releaseId: string, projectIds?: string[]) =>
+    invoke<string>("start_rollback", { releaseId, projectIds: projectIds ?? null }),
   getReleases: () => invoke<ReleaseRecord[]>("get_releases"),
+  deleteRelease: (releaseId: string) =>
+    invoke<void>("delete_release", { releaseId }),
   getFrontendReleases: () =>
     invoke<FrontendReleaseRecord[]>("get_frontend_releases"),
+  deleteFrontendRelease: (releaseId: string) =>
+    invoke<void>("delete_frontend_release", { releaseId }),
   startFrontendRollback: (releaseId: string) =>
     invoke<string>("start_frontend_rollback", { releaseId }),
 

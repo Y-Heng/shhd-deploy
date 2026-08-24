@@ -99,6 +99,16 @@ fn record_frontend_rollback(source: &FrontendReleaseRecord) {
     persist_frontend_releases(&records);
 }
 
+/// 删除一条前端发布历史（不影响服务器上的备份目录）
+pub fn delete_frontend_release(release_id: &str) -> Result<()> {
+    let mut records = load_frontend_releases();
+    let before = records.len();
+    records.retain(|record| record.id != release_id);
+    if records.len() == before { bail!("找不到该发布记录"); }
+    persist_frontend_releases(&records);
+    Ok(())
+}
+
 fn mode_label(mode: DeployMode) -> &'static str {
     match mode {
         DeployMode::Full => "直接替换",

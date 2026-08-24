@@ -14,6 +14,7 @@ import type {
 } from "../types";
 
 const PRESET_GROUPS = ["开发环境", "正式环境"];
+const extraGroups = ref<string[]>([]);
 
 const props = defineProps<{ active?: boolean }>();
 
@@ -49,7 +50,7 @@ const editForm = reactive<FrontendTarget>({
 const task = frontendDeployTask;
 
 const groupOptions = computed(() => {
-  const names = new Set(PRESET_GROUPS);
+  const names = new Set([...PRESET_GROUPS, ...extraGroups.value]);
   for (const target of config.value?.frontendTargets ?? []) names.add(target.group || "未分组");
   return Array.from(names);
 });
@@ -80,8 +81,11 @@ async function reloadPage() {
   if (!groups.includes(selectedGroup.value) && groups.length > 0) selectedGroup.value = groups[0];
 }
 
-watch(selectedGroup, () => {
+watch(selectedGroup, (groupName) => {
   selectedTargetIds.value = [];
+  const trimmed = (groupName || "").trim();
+  if (!trimmed) return;
+  if (!groupOptions.value.includes(trimmed)) extraGroups.value = [...extraGroups.value, trimmed];
 });
 
 watch(
@@ -110,6 +114,58 @@ function groupTagType(groupName: string): "success" | "danger" | "info" | "warni
 
 async function refreshReleases() {
   releases.value = await api.getFrontendReleases();
+}
+
+const historyGroupFilter = ref("all");
+
+const historyGroupOptions = computed(() => {
+  const names = new Set(groupOptions.value);
+  for (const record of releases.value) {
+    if (record.groupName) names.add(record.groupName);
+  }
+  return Array.from(names);
+});
+
+const visibleReleases = computed(() => {
+  if (historyGroupFilter.value === "all") return releases.value;
+  return releases.value.filter((record) => record.groupName === historyGroupFilter.value);
+});
+
+async function addEnvironment() {
+  try {
+    const { value } = await ElMessageBox.prompt("请输入环境名称", "添加环境", {
+      confirmButtonText: "添加",
+      inputPlaceholder: "如 测试环境、预发环境",
+      inputValidator: (name: string) => {
+        const trimmed = name?.trim() ?? "";
+        if (!trimmed) return "请输入环境名称";
+        if (groupOptions.value.includes(trimmed)) return "该环境已存在";
+        return true;
+      },
+    });
+    const name = String(value).trim();
+    extraGroups.value = [...extraGroups.value, name];
+    selectedGroup.value = name;
+    ElMessage.success(`已切换到「${name}」，请添加该环境下的项目`);
+  } catch {
+    return;
+  }
+}
+
+async function deleteReleaseRecord(record: FrontendReleaseRecord) {
+  try {
+    await ElMessageBox.confirm(
+      `确认删除发布记录「${record.targetNames.join("、")}」（${record.createdAt}）？删除后不可恢复，服务器上的备份目录不会自动清理。`,
+      "删除确认",
+      { type: "warning", confirmButtonText: "删除" }
+    );
+    await api.deleteFrontendRelease(record.id);
+    await refreshReleases();
+    ElMessage.success("已删除");
+  } catch (error) {
+    if (error === "cancel" || error === "close") return;
+    ElMessage.error(String(error));
+  }
 }
 
 async function deploySelected() {
@@ -273,12 +329,22 @@ async function startRollback(record: FrontendReleaseRecord) {
   <div v-if="config">
     <div class="view-header">
       <h2>前端部署</h2>
-      <el-select v-model="selectedGroup" style="width: 220px">
-        <el-option v-for="groupName in groupOptions" :key="groupName" :label="groupName" :value="groupName" />
-      </el-select>
+      <div class="header-actions">
+        <el-select
+          v-model="selectedGroup"
+          filterable
+          allow-create
+          default-first-option
+          placeholder="选择或输入环境"
+          style="width: 220px"
+        >
+          <el-option v-for="groupName in groupOptions" :key="groupName" :label="groupName" :value="groupName" />
+        </el-select>
+        <el-button @click="addEnvironment">添加环境</el-button>
+      </div>
     </div>
     <el-alert
-      :title="`当前环境：${selectedGroup}。开发和正式请分开配置，避免发错。`"
+      :title="`当前环境：${selectedGroup}。不同环境请分开配置，避免发错。`"
       :type="selectedGroup.includes('正式') ? 'error' : 'success'"
       :closable="false"
       style="margin-bottom: 12px"
@@ -366,10 +432,19 @@ async function startRollback(record: FrontendReleaseRecord) {
       </el-tab-pane>
 
       <el-tab-pane label="发布历史" name="history">
-        <div style="margin-bottom: 10px">
+        <div style="margin-bottom: 10px; display: flex; gap: 8px; align-items: center">
+          <el-select v-model="historyGroupFilter" placeholder="全部环境" style="width: 200px">
+            <el-option label="全部环境" value="all" />
+            <el-option
+              v-for="groupName in historyGroupOptions"
+              :key="groupName"
+              :label="groupName"
+              :value="groupName"
+            />
+          </el-select>
           <el-button size="small" @click="refreshReleases">刷新</el-button>
         </div>
-        <el-table :data="releases" stripe>
+        <el-table :data="visibleReleases" stripe>
           <el-table-column prop="createdAt" label="时间" width="170" />
           <el-table-column label="环境" width="120">
             <template #default="{ row }">
@@ -391,7 +466,7 @@ async function startRollback(record: FrontendReleaseRecord) {
             </template>
           </el-table-column>
           <el-table-column prop="message" label="说明" min-width="220" show-overflow-tooltip />
-          <el-table-column label="操作" width="100" fixed="right">
+          <el-table-column label="操作" width="180" fixed="right">
             <template #default="{ row }">
               <el-button
                 v-if="canRollback(row)"
@@ -402,6 +477,15 @@ async function startRollback(record: FrontendReleaseRecord) {
                 @click="startRollback(row)"
               >
                 回滚
+              </el-button>
+              <el-button
+                size="small"
+                type="danger"
+                plain
+                :disabled="task.running.value"
+                @click="deleteReleaseRecord(row)"
+              >
+                删除
               </el-button>
             </template>
           </el-table-column>
@@ -421,7 +505,7 @@ async function startRollback(record: FrontendReleaseRecord) {
             filterable
             allow-create
             default-first-option
-            placeholder="开发环境 / 正式环境"
+            placeholder="可输入新环境，如测试环境 / 预发环境"
             style="width: 100%"
           >
             <el-option v-for="groupName in groupOptions" :key="groupName" :label="groupName" :value="groupName" />
@@ -491,6 +575,11 @@ async function startRollback(record: FrontendReleaseRecord) {
 }
 .view-header h2 {
   margin: 0;
+}
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .deploy-options {
   display: flex;
