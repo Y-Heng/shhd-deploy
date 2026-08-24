@@ -1,7 +1,7 @@
 //! 前端部署：把本地 dist 打包上传到 nginx 目录，支持中转/替换与发布前快照回滚。
 
 use crate::config::{AppConfig, OsType};
-use crate::deploy_backend::DeployMode;
+use crate::deploy_backend::{zip_local_mtime, DeployMode};
 use crate::events::TaskLogger;
 use crate::ssh::{self, SshConnection};
 use anyhow::{bail, Context, Result};
@@ -370,11 +370,12 @@ fn zip_directory(source_dir: &Path, zip_path: &Path) -> Result<(u64, u64)> {
         if relative.is_empty() {
             continue;
         }
+        let file_options = options.last_modified_time(zip_local_mtime(path));
         if path.is_dir() {
-            zip_writer.add_directory(relative, options)?;
+            zip_writer.add_directory(relative, file_options)?;
             continue;
         }
-        zip_writer.start_file(relative, options)?;
+        zip_writer.start_file(relative, file_options)?;
         let mut source_file = std::fs::File::open(path)?;
         loop {
             let read = source_file.read(&mut read_buffer)?;

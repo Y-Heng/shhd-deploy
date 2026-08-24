@@ -6,7 +6,7 @@ use crate::config::{
 use crate::events::TaskLogger;
 use crate::ssh::{self, SshConnection};
 use anyhow::{anyhow, bail, Context, Result};
-use chrono::TimeZone;
+use chrono::{Datelike, TimeZone, Timelike};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -460,6 +460,27 @@ fn check_cancel(cancel: &CancellationToken) -> Result<()> {
     Ok(())
 }
 
+/// ZIP DOS 时间没有时区，解压端会当成本地墙上时间。
+/// zip crate 默认写入 UTC 时钟，国内会差 8 小时；这里改成本地文件的修改时间。
+pub(crate) fn zip_local_mtime(path: &Path) -> zip::DateTime {
+    let Some(modified) = std::fs::metadata(path)
+        .ok()
+        .and_then(|meta| meta.modified().ok())
+    else {
+        return zip::DateTime::default();
+    };
+    let local = chrono::DateTime::<chrono::Local>::from(modified);
+    zip::DateTime::from_date_and_time(
+        local.year() as u16,
+        local.month() as u8,
+        local.day() as u8,
+        local.hour() as u8,
+        local.minute() as u8,
+        local.second() as u8,
+    )
+    .unwrap_or_else(|_| zip::DateTime::default())
+}
+
 /// 按忽略规则、时间、白名单和预览勾选压缩产物
 fn zip_project_directory(
     project: &BackendProject,
@@ -498,7 +519,8 @@ fn zip_project_directory(
         for part in file.relative.split('/') {
             abs_path.push(part);
         }
-        zip_writer.start_file(&file.relative, options)?;
+        let file_options = options.last_modified_time(zip_local_mtime(&abs_path));
+        zip_writer.start_file(&file.relative, file_options)?;
         let mut source_file = std::fs::File::open(&abs_path)?;
         loop {
             let read = source_file.read(&mut read_buffer)?;
