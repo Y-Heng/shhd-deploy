@@ -106,6 +106,12 @@ body,
   color: var(--app-text);
 }
 
+/* 原生标题栏与主体分区线 */
+#app {
+  box-sizing: border-box;
+  border-top: 1px solid var(--app-border);
+}
+
 /* Element Plus：卡片 / 表格 / 输入 / 对话框 / 折叠 / 标签页 统一有边框 */
 .el-card {
   --el-card-border-color: var(--app-border);
