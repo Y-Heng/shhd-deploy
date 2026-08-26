@@ -28,9 +28,9 @@ const backupSibling = ref(true);
 const releases = ref<FrontendReleaseRecord[]>([]);
 
 const modeDescriptions: Record<DeployMode, string> = {
-  full: "本地产物打包后一次上传到服务器再解压覆盖，直接生效",
+  full: "本地产物打包后一次上传到服务器再解压覆盖，直接生效；成功后删除中转目录",
   stage: "打包上传到服务器的「目录名-staging」中转目录，不动线上，稍后再替换",
-  replace: "把中转目录内容替换到线上目录（不重新上传，服务器本地复制，秒级）",
+  replace: "把中转目录内容替换到线上目录（不重新上传，服务器本地复制，秒级），成功后删除中转目录",
 };
 
 const editForm = reactive<FrontendTarget>({

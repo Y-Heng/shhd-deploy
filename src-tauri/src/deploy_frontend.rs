@@ -350,6 +350,50 @@ fn staging_dir_of(target: &crate::config::FrontendTarget) -> String {
     }
 }
 
+fn same_native_dir(os: OsType, left: &str, right: &str) -> bool {
+    let left = native_path(os, trim_dir(left));
+    let right = native_path(os, trim_dir(right));
+    match os {
+        OsType::Windows => left.eq_ignore_ascii_case(&right),
+        OsType::Linux => left == right,
+    }
+}
+
+/// 替换成功后删除中转目录；与线上同一路径时返回空，避免误删
+fn staging_cleanup_script(os: OsType, staging: &str, live: &str) -> String {
+    if same_native_dir(os, staging, live) { return String::new(); }
+    let staging = native_path(os, trim_dir(staging));
+    match os {
+        OsType::Windows => format!(
+            r#"if (-not (Test-Path -LiteralPath '{staging}')) {{ Write-Output '中转目录不存在，无需删除'; exit 0 }}
+Remove-Item -LiteralPath '{staging}' -Recurse -Force
+Write-Output '已删除中转目录 {staging}'
+exit 0"#,
+            staging = escape_ps(&staging),
+        ),
+        OsType::Linux => format!(
+            r#"if [ ! -d '{staging}' ]; then echo '中转目录不存在，无需删除'; exit 0; fi
+rm -rf '{staging}'
+echo '已删除中转目录 {staging}'"#,
+            staging = escape_sh(&staging),
+        ),
+    }
+}
+
+async fn remove_staging_dir(
+    conn: &SshConnection,
+    staging: &str,
+    live: &str,
+    logger: &TaskLogger,
+) -> Result<()> {
+    let script = staging_cleanup_script(conn.server.os, staging, live);
+    if script.is_empty() {
+        logger.warn("中转目录与线上目录相同，跳过删除中转");
+        return Ok(());
+    }
+    run_os_script(conn, &script, logger).await
+}
+
 /// 把本地目录打成 zip（前端产物已压缩，用 Stored 加快打包）
 fn zip_directory(source_dir: &Path, zip_path: &Path) -> Result<(u64, u64)> {
     use std::io::{Read, Write};
@@ -1085,7 +1129,7 @@ async fn deploy_frontend_targets(
                     with_heartbeat(
                         logger,
                         cancel,
-                        &server_span.slice(0.72, 1.0),
+                        &server_span.slice(0.72, 0.96),
                         &format!("[{}] 服务器解压并覆盖线上目录", label),
                         extract_zip(
                             &conn,
@@ -1096,6 +1140,9 @@ async fn deploy_frontend_targets(
                         ),
                     )
                     .await?;
+                    if let Err(error) = remove_staging_dir(&conn, &staging_dir, &target.remote_dir, logger).await {
+                        logger.warn(format!("{} 线上已更新，但删除中转目录失败: {:#}", label, error));
+                    }
                     logger.success(format!("{} 部署完成", label));
                 }
                 DeployMode::Replace => {
@@ -1118,7 +1165,7 @@ async fn deploy_frontend_targets(
                     with_heartbeat(
                         logger,
                         cancel,
-                        &server_span.slice(replace_from, 1.0),
+                        &server_span.slice(replace_from, 0.92),
                         &format!("[{}] 从中转目录替换到线上", label),
                         replace_from_staging(
                             &conn,
@@ -1129,6 +1176,9 @@ async fn deploy_frontend_targets(
                         ),
                     )
                     .await?;
+                    if let Err(error) = remove_staging_dir(&conn, &staging_dir, &target.remote_dir, logger).await {
+                        logger.warn(format!("{} 已从中转替换，但删除中转目录失败: {:#}", label, error));
+                    }
                     logger.success(format!("{} 已从中转替换", label));
                 }
             }
@@ -1235,4 +1285,35 @@ pub async fn run_frontend_rollback(
     record_frontend_rollback(&record);
     logger.success("前端回滚完成");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{staging_cleanup_script, OsType};
+
+    #[test]
+    fn windows_cleanup_deletes_staging_dir() {
+        let script = staging_cleanup_script(
+            OsType::Windows,
+            r"D:\www\app-staging",
+            r"D:\www\app",
+        );
+        assert!(script.contains("Remove-Item -LiteralPath 'D:\\www\\app-staging'"));
+        assert!(script.contains("已删除中转目录"));
+        assert!(!script.contains("Remove-Item -LiteralPath 'D:\\www\\app'"));
+    }
+
+    #[test]
+    fn linux_cleanup_deletes_staging_dir() {
+        let script = staging_cleanup_script(OsType::Linux, "/var/www/app-staging", "/var/www/app");
+        assert!(script.contains("rm -rf '/var/www/app-staging'"));
+        assert!(script.contains("已删除中转目录"));
+        assert!(!script.contains("rm -rf '/var/www/app'"));
+    }
+
+    #[test]
+    fn skip_cleanup_when_staging_is_live() {
+        assert!(staging_cleanup_script(OsType::Windows, r"D:\www\app", r"D:\www\app\").is_empty());
+        assert!(staging_cleanup_script(OsType::Linux, "/var/www/app/", "/var/www/app").is_empty());
+    }
 }
