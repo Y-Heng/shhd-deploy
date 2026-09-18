@@ -16,6 +16,7 @@ mod ssh;
 mod terminal;
 mod tunnel;
 mod window_chrome;
+mod sysinfo;
 
 use config::AppConfig;
 use deploy_backend::{BackendDeployRequest, ProjectPackPreview, ReleaseRecord};
@@ -28,6 +29,7 @@ use terminal::TerminalManager;
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 use tunnel::{TunnelManager, TunnelStatusInfo};
+use sysinfo::{SystemStats, SysinfoManager};
 
 /// SFTP 错误统一记录诊断日志
 fn map_sftp_error(operation: &str, server_id: &str, path: &str, error: impl std::fmt::Display) -> String {
@@ -49,6 +51,7 @@ pub struct AppState {
     pub tasks: Arc<Mutex<HashMap<String, CancellationToken>>>,
     pub task_registry: Arc<TaskRegistry>,
     pub mcp: Arc<mcp::McpManager>,
+    pub sysinfo: Arc<SysinfoManager>,
 }
 
 /// 读取当前内存中的完整配置
@@ -510,6 +513,29 @@ async fn terminal_write(
     Ok(())
 }
 
+/// 向指定终端会话写入原始字节数组（用于 ZMODEM / lrzsz 等二进制协议）
+#[tauri::command]
+async fn terminal_write_raw(
+    state: State<'_, AppState>,
+    session_id: String,
+    data: Vec<u8>,
+) -> Result<(), String> {
+    state.terminals.write_raw(&session_id, data).await;
+    Ok(())
+}
+
+/// 保存二进制文件到本地路径
+#[tauri::command]
+async fn write_local_file(path: String, data: Vec<u8>) -> Result<(), String> {
+    std::fs::write(&path, data).map_err(|err| format!("写入本地文件失败: {}", err))
+}
+
+/// 读取本地二进制文件
+#[tauri::command]
+async fn read_local_file(path: String) -> Result<Vec<u8>, String> {
+    std::fs::read(&path).map_err(|err| format!("读取本地文件失败: {}", err))
+}
+
 /// 调整终端 PTY 行列
 #[tauri::command]
 async fn terminal_resize(
@@ -528,6 +554,47 @@ async fn terminal_close(state: State<'_, AppState>, session_id: String) -> Resul
     state.terminals.close(&session_id).await;
     Ok(())
 }
+
+/// 单次获取服务器系统信息
+#[tauri::command]
+async fn get_system_stats(
+    state: State<'_, AppState>,
+    server_id: String,
+) -> Result<SystemStats, String> {
+    let config = state.config.read().await.clone();
+    state
+        .sysinfo
+        .fetch_stats(&config, &server_id)
+        .await
+        .map_err(|e| format!("采集系统信息失败: {:#}", e))
+}
+
+/// 启动服务器系统信息后台定时采集
+#[tauri::command]
+async fn start_system_monitor(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    server_id: String,
+    interval_secs: Option<u64>,
+) -> Result<(), String> {
+    let config = state.config.read().await.clone();
+    state
+        .sysinfo
+        .start_monitoring(app, config, server_id, interval_secs.unwrap_or(2))
+        .await;
+    Ok(())
+}
+
+/// 停止服务器系统信息后台定时采集
+#[tauri::command]
+async fn stop_system_monitor(
+    state: State<'_, AppState>,
+    server_id: String,
+) -> Result<(), String> {
+    state.sysinfo.stop_monitoring(&server_id).await;
+    Ok(())
+}
+
 
 /// 本机用户主目录
 #[tauri::command]
@@ -886,6 +953,7 @@ pub fn run() {
             tasks: Arc::new(Mutex::new(HashMap::new())),
             task_registry: Arc::new(TaskRegistry::default()),
             mcp: Arc::new(mcp::McpManager::default()),
+            sysinfo: Arc::new(SysinfoManager::default()),
         })
         .setup(|app| {
             let app_handle = app.handle().clone();
@@ -952,6 +1020,9 @@ pub fn run() {
             cancel_task,
             terminal_open,
             terminal_write,
+            terminal_write_raw,
+            write_local_file,
+            read_local_file,
             terminal_resize,
             terminal_close,
             get_home_dir,
@@ -973,7 +1044,10 @@ pub fn run() {
             set_logging_enabled,
             open_log_dir,
             read_recent_logs,
-            window_chrome::apply_window_chrome
+            window_chrome::apply_window_chrome,
+            get_system_stats,
+            start_system_monitor,
+            stop_system_monitor,
         ])
         .run(tauri::generate_context!())
         .expect("启动应用失败");

@@ -9,3 +9,11 @@ declare module "*.vue" {
 }
 
 declare module "element-plus/es/locale/lang/zh-cn";
+
+declare module "zmodem.js/src/zmodem_browser.js" {
+  export const Sentry: unknown;
+  export const Browser: {
+    send_files: (session: unknown, files: File[], options?: Record<string, unknown>) => Promise<void>;
+    save_to_disk: (packets: unknown[], name: string) => void;
+  };
+}

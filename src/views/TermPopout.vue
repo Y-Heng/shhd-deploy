@@ -11,9 +11,9 @@ import "@xterm/xterm/css/xterm.css";
 import { api } from "../api";
 import SftpPanel from "../components/SftpPanel.vue";
 import { createSshTerminal } from "../sshTerminal";
+import { createZmodemSession, type ZmodemSessionController } from "../zmodem";
 import { sftpTransfer } from "../composables/useSftpTransfer";
 import type { TermClosedPayload, TermDataPayload } from "../types";
-
 const props = defineProps<{
   sessionId: string;
   title: string;
@@ -28,6 +28,7 @@ const termHost = ref<HTMLElement | null>(null);
 
 let terminal: Terminal | null = null;
 let fitAddon: FitAddon | null = null;
+let zmodem: ZmodemSessionController | null = null;
 const unlisteners: UnlistenFn[] = [];
 
 function writeBytes(data: string) {
@@ -35,9 +36,12 @@ function writeBytes(data: string) {
   const binary = atob(data);
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
-  terminal.write(bytes);
+  if (zmodem) {
+    zmodem.consume(bytes);
+  } else {
+    terminal.write(bytes);
+  }
 }
-
 function fitTerminal() {
   if (panelMode.value !== "terminal" || !fitAddon) return;
   const container = termHost.value;
@@ -57,6 +61,10 @@ onMounted(async () => {
   const created = createSshTerminal();
   terminal = created.terminal;
   fitAddon = created.fitAddon;
+  zmodem = createZmodemSession({
+    sessionId: props.sessionId,
+    terminal,
+  });
   terminal.onData((data) => {
     if (!closed.value) api.terminalWrite(props.sessionId, data);
   });
@@ -84,6 +92,7 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener("resize", fitTerminal);
   for (const unlisten of unlisteners) unlisten();
+  zmodem?.dispose();
   terminal?.dispose();
 });
 </script>

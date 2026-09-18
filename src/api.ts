@@ -11,6 +11,7 @@ import type {
   LocalFileEntry,
   SftpEntry,
   ProjectPackPreview,
+  SystemStats,
 } from "./types";
 
 /** 前端调用 Rust 命令的封装，字段名与 Tauri 侧 camelCase 对齐 */
@@ -75,6 +76,19 @@ export const api = {
     invoke<string>("terminal_open", { serverId, cols, rows }),
   terminalWrite: (sessionId: string, data: string) =>
     invoke<void>("terminal_write", { sessionId, data }),
+  terminalWriteRaw: (sessionId: string, data: number[] | Uint8Array) =>
+    invoke<void>("terminal_write_raw", {
+      sessionId,
+      data: Array.from(data),
+    }),
+  writeLocalFile: (path: string, data: number[] | Uint8Array) =>
+    invoke<void>("write_local_file", {
+      path,
+      data: Array.from(data),
+    }),
+  readLocalFile: (path: string) =>
+    invoke<number[]>("read_local_file", { path }),
+  restoreMouseCursor: () => invoke<void>("restore_mouse_cursor"),
   terminalResize: (sessionId: string, cols: number, rows: number) =>
     invoke<void>("terminal_resize", { sessionId, cols, rows }),
   terminalClose: (sessionId: string) =>
@@ -143,4 +157,14 @@ export const api = {
   /** 将原生标题栏颜色与当前深浅色对齐 */
   applyWindowChrome: (dark: boolean) =>
     invoke<void>("apply_window_chrome", { dark }),
+
+  /** 单次获取服务器系统指标 */
+  getSystemStats: (serverId: string) =>
+    invoke<SystemStats>("get_system_stats", { serverId }),
+  /** 启动系统信息后台定时采集推送 */
+  startSystemMonitor: (serverId: string, intervalSecs?: number) =>
+    invoke<void>("start_system_monitor", { serverId, intervalSecs }),
+  /** 停止系统信息后台定时采集 */
+  stopSystemMonitor: (serverId: string) =>
+    invoke<void>("stop_system_monitor", { serverId }),
 };

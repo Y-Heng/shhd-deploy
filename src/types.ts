@@ -296,3 +296,55 @@ export interface TaskProgressPayload {
   percent: number;
   step: string;
 }
+
+/** 系统信息进程结构 */
+export interface ProcessInfo {
+  pid: number;
+  name: string;
+  cpuPercent: number;
+  memoryBytes: number;
+  memoryDisplay: string;
+}
+
+/** 系统信息磁盘挂载结构 */
+export interface DiskMount {
+  filesystem: string;
+  mountPoint: string;
+  totalBytes: number;
+  usedBytes: number;
+  freeBytes: number;
+  usePercent: number;
+}
+
+/** 系统信息网卡流量 */
+export interface NetworkInterface {
+  name: string;
+  rxBytes: number;
+  txBytes: number;
+  rxSpeedBytes: number;
+  txSpeedBytes: number;
+}
+
+/** 系统实时信息完整指标 */
+export interface SystemStats {
+  serverId: string;
+  uptimeSeconds: number;
+  uptimeDisplay: string;
+  load1: number;
+  load5: number;
+  load15: number;
+  cpuPercent: number;
+  memoryTotal: number;
+  memoryUsed: number;
+  memoryFree: number;
+  memoryPercent: number;
+  swapTotal: number;
+  swapUsed: number;
+  swapPercent: number;
+  rxSpeedBytes: number;
+  txSpeedBytes: number;
+  topProcesses: ProcessInfo[];
+  disks: DiskMount[];
+  networks: NetworkInterface[];
+  timestampMs: number;
+}

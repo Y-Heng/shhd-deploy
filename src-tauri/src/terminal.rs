@@ -1,4 +1,4 @@
-//! 交互式 SSH 终端（PTY）。Windows 登录壳是 cmd 时会切到 PowerShell 并关掉 PSReadLine。
+//! 交互式 SSH 终端（PTY）。Windows 登录壳是 cmd 时会切到 PowerShell。
 
 use crate::config::{AppConfig, OsType};
 use crate::ssh;
@@ -44,9 +44,6 @@ fn interactive_pty_modes(windows: bool) -> Vec<(Pty, u32)> {
 
 /// 启动 PowerShell：无引号、无 -Command，避免旧版 OpenSSH 截断后卡在 stdin。
 const START_POWERSHELL: &[u8] = b"powershell -NoLogo -NoProfile -NoExit\r";
-/// 关掉 PSReadLine（跳板机下会闪烁/逐字换行），再 cls 清掉 ConPTY 顶部空行。
-const PREPARE_POWERSHELL: &[u8] = b"Remove-Module PSReadLine -ErrorAction SilentlyContinue; cls\r";
-const CLEAR_SCREEN: &[u8] = b"cls\r";
 
 /// 发送给终端会话任务的控制命令
 enum TermCommand {
@@ -140,7 +137,7 @@ impl WinBoot {
             WinBootPhase::WaitPowerShell => {
                 self.phase = WinBootPhase::Done;
                 self.buf.clear();
-                Some(CLEAR_SCREEN)
+                None
             }
             WinBootPhase::Done => None,
         }
@@ -158,7 +155,7 @@ impl WinBoot {
         self.phase = WinBootPhase::Done;
         self.buf.clear();
         crate::logger::append_log("terminal Windows 已进入 PowerShell");
-        Some(PREPARE_POWERSHELL)
+        None
     }
 }
 
@@ -197,8 +194,8 @@ fn detect_windows_prompt(buf: &[u8]) -> Option<WinPrompt> {
     if line.is_empty() || !line.ends_with(&[b'>']) {
         return None;
     }
-    // 正在回显我们注入的命令时不要当成提示符
-    if line_has_ascii(line, b"powershell") || line_has_ascii(line, b"remove-module") || line_has_ascii(line, b"cls") {
+    // 正在回显我们注入的启动命令时不要当成提示符
+    if line_has_ascii(line, b"powershell") {
         return None;
     }
     if is_powershell_prompt(line) {
@@ -211,6 +208,7 @@ fn detect_windows_prompt(buf: &[u8]) -> Option<WinPrompt> {
 #[derive(Default)]
 pub struct TerminalManager {
     sessions: Mutex<HashMap<String, mpsc::Sender<TermCommand>>>,
+    last_sizes: Mutex<HashMap<String, (u32, u32)>>,
 }
 
 impl TerminalManager {
@@ -302,9 +300,10 @@ impl TerminalManager {
                             Some(TermCommand::Write(bytes)) => {
                                 if channel.data(&bytes[..]).await.is_err() { break; }
                             }
-                            Some(TermCommand::Resize(new_cols, new_rows)) => {
-                                let _ = channel.window_change(new_cols, new_rows, 0, 0).await;
-                            }
+                        Some(TermCommand::Resize(new_cols, new_rows)) => {
+                            // 避免对未变化的相同行列重复触发 Windows ConPTY 的窗口重绘
+                            let _ = channel.window_change(new_cols, new_rows, 0, 0).await;
+                        }
                             Some(TermCommand::Close) | None => {
                                 let _ = channel.close().await;
                                 break;
@@ -347,8 +346,25 @@ impl TerminalManager {
         }
     }
 
-    /// 调整会话窗口大小
+    /// 向会话写入原始字节（供 ZMODEM / lrzsz 等二进制协议使用）
+    pub async fn write_raw(&self, session_id: &str, data: Vec<u8>) {
+        let sender = { self.sessions.lock().await.get(session_id).cloned() };
+        if let Some(sender) = sender {
+            let _ = sender.send(TermCommand::Write(data)).await;
+        }
+    }
+
+    /// 调整会话窗口大小（若尺寸未变则忽略，避免频繁触发 ConPTY 重绘）
     pub async fn resize(&self, session_id: &str, cols: u32, rows: u32) {
+        {
+            let mut sizes = self.last_sizes.lock().await;
+            if let Some(&(last_cols, last_rows)) = sizes.get(session_id) {
+                if last_cols == cols && last_rows == rows {
+                    return;
+                }
+            }
+            sizes.insert(session_id.to_string(), (cols, rows));
+        }
         let sender = { self.sessions.lock().await.get(session_id).cloned() };
         if let Some(sender) = sender {
             let _ = sender.send(TermCommand::Resize(cols, rows)).await;
@@ -357,6 +373,7 @@ impl TerminalManager {
 
     /// 关闭会话并移出管理器
     pub async fn close(&self, session_id: &str) {
+        self.last_sizes.lock().await.remove(session_id);
         let sender = { self.sessions.lock().await.remove(session_id) };
         if let Some(sender) = sender {
             let _ = sender.send(TermCommand::Close).await;
@@ -393,10 +410,6 @@ mod tests {
     fn ignore_echoed_inject() {
         assert_eq!(
             detect_windows_prompt(b"C:\\Users\\hyin>powershell -NoLogo -NoProfile -NoExit"),
-            None
-        );
-        assert_eq!(
-            detect_windows_prompt(b"PS C:\\Users\\hyin>Remove-Module PSReadLine -ErrorAction SilentlyContinue; cls"),
             None
         );
     }

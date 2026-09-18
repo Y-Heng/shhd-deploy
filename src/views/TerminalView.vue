@@ -11,10 +11,12 @@ import '@xterm/xterm/css/xterm.css'
 import { api } from '../api'
 import { bus, OPEN_SSH_EVENT, syncActiveSshServerIds, syncConnectingSshServerIds } from '../bus'
 import SftpPanel from '../components/SftpPanel.vue'
+import SystemInfoPanel from '../components/SystemInfoPanel.vue'
 import GripDots from '../components/GripDots.vue'
 import { dropPlaceByX, elementFromPointIgnoringDrag, isDropPlaceholder } from '../composables/groupedDragSort'
 import { createSshTerminal } from '../sshTerminal'
 import { sftpTransfer } from '../composables/useSftpTransfer'
+import { createZmodemSession, type ZmodemSessionController } from '../zmodem'
 import type { AppConfig, QuickCommand, ServerConfig, TermClosedPayload, TermDataPayload } from '../types'
 
 interface TermSession {
@@ -24,13 +26,14 @@ interface TermSession {
   title: string
   terminal: Terminal
   fitAddon: FitAddon
+  zmodem?: ZmodemSessionController
   closed: boolean
   connecting: boolean
   popoutLabel: string
   panelMode: MainPanelMode
 }
 
-type RightPanelMode = 'snippets' | 'hidden'
+type RightPanelMode = 'snippets' | 'sysinfo' | 'hidden'
 type MainPanelMode = 'terminal' | 'sftp'
 
 const emptyQuickCommand = (): QuickCommand => ({
@@ -78,6 +81,14 @@ const snippetSidebarVisible = computed(
   () => rightPanelMode.value === 'snippets' && activePanelMode.value === 'terminal'
 )
 const activePanelMode = computed(() => getActiveSession()?.panelMode ?? 'terminal')
+const activeServer = computed(() => {
+  const session = getActiveSession()
+  if (!session) return null
+  return config.value?.servers?.find(s => s.id === session.serverId) ?? null
+})
+const sysinfoSidebarVisible = computed(
+  () => rightPanelMode.value === 'sysinfo'
+)
 
 const quickCommands = computed(() => config.value?.quickCommands ?? [])
 
@@ -244,17 +255,22 @@ function fitActiveTerminal() {
   }
 }
 
+let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null
+
 function observeTerminalSize(session: TermSession, container: HTMLElement) {
   terminalObservers.get(session.uiId)?.disconnect()
   const observer = new ResizeObserver(() => {
     if (session.uiId !== activeSessionId.value) return
     if (session.panelMode !== 'terminal' || session.popoutLabel) return
     if (container.clientWidth < 40 || container.clientHeight < 40) return
-    try {
-      session.fitAddon.fit()
-    } catch {
-      // 容器可能暂时不可见
-    }
+    if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer)
+    resizeDebounceTimer = setTimeout(() => {
+      try {
+        session.fitAddon.fit()
+      } catch {
+        // 容器可能暂时不可见
+      }
+    }, 60)
   })
   observer.observe(container)
   terminalObservers.set(session.uiId, observer)
@@ -278,9 +294,14 @@ async function openSessionForServer(serverId: string) {
     if (!current || current.closed || current.connecting || !current.sessionId) return
     api.terminalWrite(current.sessionId, data)
   })
+  let lastSentCols = 0
+  let lastSentRows = 0
   terminal.onResize(({ cols, rows }) => {
     const current = sessions.value.find(item => item.uiId === uiId)
     if (!current?.sessionId || current.connecting) return
+    if (lastSentCols === cols && lastSentRows === rows) return
+    lastSentCols = cols
+    lastSentRows = rows
     api.terminalResize(current.sessionId, cols, rows)
   })
 
@@ -315,6 +336,10 @@ async function openSessionForServer(serverId: string) {
     const rows = Math.max(terminal.rows, 5)
     const sessionId = await api.terminalOpen(server.id, cols, rows)
     session.sessionId = sessionId
+    session.zmodem = createZmodemSession({
+      sessionId,
+      terminal,
+    })
     session.connecting = false
     syncSessionFlags()
     await nextTick()
@@ -348,6 +373,7 @@ async function closeSession(uiId: string) {
     await popped?.close()
   }
   if (session.sessionId) await api.terminalClose(session.sessionId)
+  session.zmodem?.dispose()
   session.terminal.dispose()
   sessions.value.splice(index, 1)
   syncSessionFlags()
@@ -583,6 +609,11 @@ function toggleSnippetSidebar() {
   rightPanelMode.value = rightPanelMode.value === 'snippets' ? 'hidden' : 'snippets'
   nextTick(() => fitActiveTerminal())
 }
+function toggleSysinfoSidebar() {
+  rightPanelMode.value = rightPanelMode.value === 'sysinfo' ? 'hidden' : 'sysinfo'
+  // 等待侧栏 DOM 展开与布局稳定后再执行 fit，避免宽度过渡瞬态触发多次 ConPTY reflow
+  setTimeout(() => fitActiveTerminal(), 120)
+}
 
 function bindSftpPanel(sessionId: string, element: unknown) {
   if (element && typeof element === 'object' && 'getCurrentPath' in element) sftpPanelMap.set(sessionId, element as { getCurrentPath: () => string; openPath?: (path: string) => void })
@@ -776,11 +807,15 @@ onMounted(async () => {
   unlisteners.push(
     await listen<TermDataPayload>('term-data', event => {
       const session = sessions.value.find(item => item.sessionId === event.payload.sessionId)
-      if (!session) return
+      if (!session || session.popoutLabel) return
       const binary = atob(event.payload.data)
       const bytes = new Uint8Array(binary.length)
       for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index)
-      session.terminal.write(bytes)
+      if (session.zmodem) {
+        session.zmodem.consume(bytes)
+      } else {
+        session.terminal.write(bytes)
+      }
     }),
     await listen<TermClosedPayload>('term-closed', event => {
       const session = sessions.value.find(item => item.sessionId === event.payload.sessionId)
@@ -808,6 +843,7 @@ onUnmounted(() => {
   terminalObservers.clear()
   for (const session of sessions.value) {
     if (session.sessionId) api.terminalClose(session.sessionId)
+    session.zmodem?.dispose()
     session.terminal.dispose()
     api.sftpDisconnect(session.serverId)
   }
@@ -874,7 +910,8 @@ onUnmounted(() => {
       <div class="topbar-actions">
         <button type="button" class="mode-btn" :class="{ active: activePanelMode === 'terminal' }" title="终端" @click="openTerminalPanel">SSH</button>
         <button type="button" class="mode-btn" :class="{ active: activePanelMode === 'sftp' }" title="SFTP 文件管理" @click="openSftpPanel">SFTP</button>
-        <button v-if="activePanelMode !== 'sftp'" type="button" class="ghost-btn braces-btn" :class="{ active: snippetSidebarVisible }" title="常用命令" @click="toggleSnippetSidebar">
+        <button type="button" class="mode-btn" :class="{ active: rightPanelMode === 'sysinfo' }" title="系统信息" @click="toggleSysinfoSidebar">系统信息</button>
+        <button v-if="activePanelMode !== 'sftp'" type="button" class="ghost-btn braces-btn" :class="{ active: rightPanelMode === 'snippets' }" title="常用命令" @click="toggleSnippetSidebar">
           <span class="braces-icon" aria-hidden="true">{}</span>
         </button>
       </div>
@@ -968,6 +1005,18 @@ onUnmounted(() => {
               </div>
             </div>
           </div>
+        </div>
+      </aside>
+      <!-- 右侧系统信息面板 -->
+      <aside v-if="sysinfoSidebarVisible" class="sysinfo-sidebar">
+        <SystemInfoPanel
+          v-if="activeServer"
+          :server-id="activeServer.id"
+          :server-host="activeServer.host"
+          :active="sysinfoSidebarVisible"
+        />
+        <div v-else class="sysinfo-empty-tip">
+          请选择连接的会话
         </div>
       </aside>
     </div>
@@ -1190,6 +1239,28 @@ onUnmounted(() => {
   font-weight: 700;
   letter-spacing: -1px;
   line-height: 1;
+}
+
+.sysinfo-sidebar {
+  width: 360px;
+  min-width: 320px;
+  max-width: 420px;
+  background: var(--term-panel);
+  border-left: 1px solid var(--term-border);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.sysinfo-empty-tip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--term-muted);
+  font-size: 13px;
 }
 
 .ghost-btn:hover,
