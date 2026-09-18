@@ -74,6 +74,8 @@ const sftpPanelMap = new Map<
   }
 >()
 const terminalObservers = new Map<string, ResizeObserver>()
+const terminalResizeTimers = new Map<string, ReturnType<typeof setTimeout>>()
+let sysinfoFitTimer: ReturnType<typeof setTimeout> | null = null
 
 const unlisteners: UnlistenFn[] = []
 
@@ -256,6 +258,21 @@ function fitActiveTerminal() {
 }
 
 let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null
+let resizeRaf: number | null = null
+
+function scheduleFitActiveTerminal(delay = 80) {
+  if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer)
+  if (resizeRaf) cancelAnimationFrame(resizeRaf)
+  resizeDebounceTimer = setTimeout(() => {
+    resizeRaf = requestAnimationFrame(() => {
+      fitActiveTerminal()
+    })
+  }, delay)
+}
+
+function onWindowResize() {
+  scheduleFitActiveTerminal(100)
+}
 
 function observeTerminalSize(session: TermSession, container: HTMLElement) {
   terminalObservers.get(session.uiId)?.disconnect()
@@ -263,14 +280,7 @@ function observeTerminalSize(session: TermSession, container: HTMLElement) {
     if (session.uiId !== activeSessionId.value) return
     if (session.panelMode !== 'terminal' || session.popoutLabel) return
     if (container.clientWidth < 40 || container.clientHeight < 40) return
-    if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer)
-    resizeDebounceTimer = setTimeout(() => {
-      try {
-        session.fitAddon.fit()
-      } catch {
-        // 容器可能暂时不可见
-      }
-    }, 60)
+    scheduleFitActiveTerminal(80)
   })
   observer.observe(container)
   terminalObservers.set(session.uiId, observer)
@@ -298,11 +308,21 @@ async function openSessionForServer(serverId: string) {
   let lastSentRows = 0
   terminal.onResize(({ cols, rows }) => {
     const current = sessions.value.find(item => item.uiId === uiId)
-    if (!current?.sessionId || current.connecting) return
+    if (!current?.sessionId || current.connecting || current.closed) return
     if (lastSentCols === cols && lastSentRows === rows) return
-    lastSentCols = cols
-    lastSentRows = rows
-    api.terminalResize(current.sessionId, cols, rows)
+    const existingTimer = terminalResizeTimers.get(uiId)
+    if (existingTimer) clearTimeout(existingTimer)
+    const timer = setTimeout(() => {
+      terminalResizeTimers.delete(uiId)
+      const activeNow = sessions.value.find(item => item.uiId === uiId)
+      if (!activeNow?.sessionId || activeNow.connecting || activeNow.closed) return
+      if (activeNow.uiId !== activeSessionId.value || activeNow.panelMode !== 'terminal' || activeNow.popoutLabel) return
+      if (lastSentCols === cols && lastSentRows === rows) return
+      lastSentCols = cols
+      lastSentRows = rows
+      api.terminalResize(activeNow.sessionId, cols, rows)
+    }, 60)
+    terminalResizeTimers.set(uiId, timer)
   })
 
   // 必须用 reactive：push 进数组后模板拿到的是代理，本地普通对象改 connecting 不会触发重绘
@@ -348,6 +368,11 @@ async function openSessionForServer(serverId: string) {
     terminal.focus()
   } catch (error) {
     ElMessage.error(String(error))
+    const pendingTimer = terminalResizeTimers.get(uiId)
+    if (pendingTimer) {
+      clearTimeout(pendingTimer)
+      terminalResizeTimers.delete(uiId)
+    }
     terminal.dispose()
     terminalObservers.get(uiId)?.disconnect()
     terminalObservers.delete(uiId)
@@ -373,6 +398,11 @@ async function closeSession(uiId: string) {
     await popped?.close()
   }
   if (session.sessionId) await api.terminalClose(session.sessionId)
+  const pendingResizeTimer = terminalResizeTimers.get(uiId)
+  if (pendingResizeTimer) {
+    clearTimeout(pendingResizeTimer)
+    terminalResizeTimers.delete(uiId)
+  }
   session.zmodem?.dispose()
   session.terminal.dispose()
   sessions.value.splice(index, 1)
@@ -384,7 +414,7 @@ async function closeSession(uiId: string) {
   if (!stillUsed) await api.sftpDisconnect(serverId)
   if (activeSessionId.value === uiId) activeSessionId.value = visibleSessions.value[visibleSessions.value.length - 1]?.uiId ?? ''
   await nextTick()
-  fitActiveTerminal()
+  scheduleFitActiveTerminal(0)
 }
 
 async function activateSession(uiId: string) {
@@ -395,7 +425,7 @@ async function activateSession(uiId: string) {
   if (activeSessionId.value === uiId) return
   activeSessionId.value = uiId
   await nextTick()
-  fitActiveTerminal()
+  scheduleFitActiveTerminal(0)
   const session = getActiveSession()
   if (session && !session.connecting) session.terminal.focus()
 }
@@ -488,7 +518,7 @@ async function popoutSession(uiId: string) {
   const dockBack = () => {
     session.popoutLabel = ''
     if (!visibleSessions.value.some(item => item.uiId === activeSessionId.value)) activeSessionId.value = session.uiId
-    nextTick(() => fitActiveTerminal())
+    nextTick(() => scheduleFitActiveTerminal(0))
   }
   await webview.once('tauri://error', event => {
     session.popoutLabel = ''
@@ -607,12 +637,16 @@ async function removeCommand(item: QuickCommand) {
 function toggleSnippetSidebar() {
   if (activePanelMode.value === 'sftp') return
   rightPanelMode.value = rightPanelMode.value === 'snippets' ? 'hidden' : 'snippets'
-  nextTick(() => fitActiveTerminal())
+  nextTick(() => scheduleFitActiveTerminal(0))
 }
 function toggleSysinfoSidebar() {
   rightPanelMode.value = rightPanelMode.value === 'sysinfo' ? 'hidden' : 'sysinfo'
-  // 等待侧栏 DOM 展开与布局稳定后再执行 fit，避免宽度过渡瞬态触发多次 ConPTY reflow
-  setTimeout(() => fitActiveTerminal(), 120)
+  if (sysinfoFitTimer) clearTimeout(sysinfoFitTimer)
+  scheduleFitActiveTerminal(100)
+  sysinfoFitTimer = setTimeout(() => {
+    sysinfoFitTimer = null
+    scheduleFitActiveTerminal(0)
+  }, 300)
 }
 
 function bindSftpPanel(sessionId: string, element: unknown) {
@@ -657,7 +691,7 @@ function openTerminalPanel() {
   const path = activeSftpPanel()?.getCurrentPath?.() || '/'
   session.panelMode = 'terminal'
   nextTick(() => {
-    fitActiveTerminal()
+    scheduleFitActiveTerminal(0)
     syncTerminalToSftpPath(path)
     session.terminal.focus()
   })
@@ -798,7 +832,7 @@ function syncTerminalToSftpPath(path: string) {
 }
 
 watch(snippetSidebarVisible, () => {
-  nextTick(() => fitActiveTerminal())
+  nextTick(() => scheduleFitActiveTerminal(0))
 })
 
 onMounted(async () => {
@@ -828,7 +862,7 @@ onMounted(async () => {
   )
 
   bus.on(OPEN_SSH_EVENT, onOpenSshRequest)
-  window.addEventListener('resize', fitActiveTerminal)
+  window.addEventListener('resize', onWindowResize)
   window.addEventListener('click', hideContextMenu)
 })
 
@@ -837,8 +871,13 @@ onUnmounted(() => {
   window.removeEventListener('pointerup', onTabPointerUp)
   for (const unlisten of unlisteners) unlisten()
   bus.off(OPEN_SSH_EVENT, onOpenSshRequest)
-  window.removeEventListener('resize', fitActiveTerminal)
+  window.removeEventListener('resize', onWindowResize)
   window.removeEventListener('click', hideContextMenu)
+  if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer)
+  if (resizeRaf) cancelAnimationFrame(resizeRaf)
+  if (sysinfoFitTimer) clearTimeout(sysinfoFitTimer)
+  for (const timer of terminalResizeTimers.values()) clearTimeout(timer)
+  terminalResizeTimers.clear()
   for (const observer of terminalObservers.values()) observer.disconnect()
   terminalObservers.clear()
   for (const session of sessions.value) {

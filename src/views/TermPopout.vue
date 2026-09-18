@@ -29,6 +29,7 @@ const termHost = ref<HTMLElement | null>(null);
 let terminal: Terminal | null = null;
 let fitAddon: FitAddon | null = null;
 let zmodem: ZmodemSessionController | null = null;
+let terminalResizeTimer: ReturnType<typeof setTimeout> | null = null;
 const unlisteners: UnlistenFn[] = [];
 
 function writeBytes(data: string) {
@@ -42,6 +43,9 @@ function writeBytes(data: string) {
     terminal.write(bytes);
   }
 }
+let fitDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let fitRaf: number | null = null;
+
 function fitTerminal() {
   if (panelMode.value !== "terminal" || !fitAddon) return;
   const container = termHost.value;
@@ -51,6 +55,19 @@ function fitTerminal() {
   } catch {
     // 容器可能暂时不可见
   }
+}
+
+function scheduleFitTerminal(delay = 80) {
+  if (fitDebounceTimer) clearTimeout(fitDebounceTimer);
+  if (fitRaf) cancelAnimationFrame(fitRaf);
+  fitDebounceTimer = setTimeout(() => {
+    fitRaf = requestAnimationFrame(() => {
+      fitTerminal();
+    });
+  }, delay);
+}
+function onWindowResize() {
+  scheduleFitTerminal(100);
 }
 
 async function closeWindow() {
@@ -68,7 +85,20 @@ onMounted(async () => {
   terminal.onData((data) => {
     if (!closed.value) api.terminalWrite(props.sessionId, data);
   });
-  terminal.onResize(({ cols, rows }) => api.terminalResize(props.sessionId, cols, rows));
+  let lastSentCols = 0;
+  let lastSentRows = 0;
+  terminal.onResize(({ cols, rows }) => {
+    if (lastSentCols === cols && lastSentRows === rows) return;
+    if (terminalResizeTimer) clearTimeout(terminalResizeTimer);
+    terminalResizeTimer = setTimeout(() => {
+      terminalResizeTimer = null;
+      if (closed.value || !terminal || panelMode.value !== "terminal") return;
+      if (lastSentCols === cols && lastSentRows === rows) return;
+      lastSentCols = cols;
+      lastSentRows = rows;
+      api.terminalResize(props.sessionId, cols, rows);
+    }, 60);
+  });
   await nextTick();
   if (termHost.value) {
     terminal.open(termHost.value);
@@ -86,11 +116,14 @@ onMounted(async () => {
       terminal?.write("\r\n\x1b[31m[会话已断开]\x1b[0m\r\n");
     })
   );
-  window.addEventListener("resize", fitTerminal);
+  window.addEventListener("resize", onWindowResize);
 });
 
 onUnmounted(() => {
-  window.removeEventListener("resize", fitTerminal);
+  if (fitDebounceTimer) clearTimeout(fitDebounceTimer);
+  if (fitRaf) cancelAnimationFrame(fitRaf);
+  if (terminalResizeTimer) clearTimeout(terminalResizeTimer);
+  window.removeEventListener("resize", onWindowResize);
   for (const unlisten of unlisteners) unlisten();
   zmodem?.dispose();
   terminal?.dispose();
@@ -103,7 +136,7 @@ onUnmounted(() => {
       <span class="popout-title">{{ title }}</span>
       <span v-if="closed" class="popout-closed">已断开</span>
       <div class="popout-actions">
-        <button type="button" class="mode-btn" :class="{ active: panelMode === 'terminal' }" @click="panelMode = 'terminal'; nextTick(fitTerminal)">SSH</button>
+        <button type="button" class="mode-btn" :class="{ active: panelMode === 'terminal' }" @click="panelMode = 'terminal'; nextTick(() => scheduleFitTerminal(0))">SSH</button>
         <button type="button" class="mode-btn" :class="{ active: panelMode === 'sftp' }" @click="panelMode = 'sftp'">SFTP</button>
         <button type="button" class="ghost-btn" title="关闭窗口（会话回到主窗口）" @click="closeWindow">
           <el-icon :size="14"><Close /></el-icon>

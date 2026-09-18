@@ -1,4 +1,4 @@
-//! 交互式 SSH 终端（PTY）。Windows 登录壳是 cmd 时会切到 PowerShell。
+//! 交互式 SSH 终端（PTY）。Windows 登录壳是 cmd 时会切到 PowerShell 并关掉 PSReadLine。
 
 use crate::config::{AppConfig, OsType};
 use crate::ssh;
@@ -44,6 +44,9 @@ fn interactive_pty_modes(windows: bool) -> Vec<(Pty, u32)> {
 
 /// 启动 PowerShell：无引号、无 -Command，避免旧版 OpenSSH 截断后卡在 stdin。
 const START_POWERSHELL: &[u8] = b"powershell -NoLogo -NoProfile -NoExit\r";
+/// 关掉 PSReadLine（跳板机下会闪烁/逐字换行），再 cls 清掉 ConPTY 顶部空行。
+const PREPARE_POWERSHELL: &[u8] = b"Remove-Module PSReadLine -ErrorAction SilentlyContinue; cls\r";
+const CLEAR_SCREEN: &[u8] = b"cls\r";
 
 /// 发送给终端会话任务的控制命令
 enum TermCommand {
@@ -137,7 +140,7 @@ impl WinBoot {
             WinBootPhase::WaitPowerShell => {
                 self.phase = WinBootPhase::Done;
                 self.buf.clear();
-                None
+                Some(CLEAR_SCREEN)
             }
             WinBootPhase::Done => None,
         }
@@ -155,7 +158,7 @@ impl WinBoot {
         self.phase = WinBootPhase::Done;
         self.buf.clear();
         crate::logger::append_log("terminal Windows 已进入 PowerShell");
-        None
+        Some(PREPARE_POWERSHELL)
     }
 }
 
@@ -194,8 +197,8 @@ fn detect_windows_prompt(buf: &[u8]) -> Option<WinPrompt> {
     if line.is_empty() || !line.ends_with(&[b'>']) {
         return None;
     }
-    // 正在回显我们注入的启动命令时不要当成提示符
-    if line_has_ascii(line, b"powershell") {
+    // 正在回显我们注入的命令时不要当成提示符
+    if line_has_ascii(line, b"powershell") || line_has_ascii(line, b"remove-module") || line_has_ascii(line, b"cls") {
         return None;
     }
     if is_powershell_prompt(line) {
@@ -410,6 +413,10 @@ mod tests {
     fn ignore_echoed_inject() {
         assert_eq!(
             detect_windows_prompt(b"C:\\Users\\hyin>powershell -NoLogo -NoProfile -NoExit"),
+            None
+        );
+        assert_eq!(
+            detect_windows_prompt(b"PS C:\\Users\\hyin>Remove-Module PSReadLine -ErrorAction SilentlyContinue; cls"),
             None
         );
     }
