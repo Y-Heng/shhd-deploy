@@ -56,14 +56,16 @@ const selectedGroup = computed<BackendGroup | null>(
     ) ?? null
 );
 
-// 使用本地时间生成 yyyyMMdd 前缀
-const now = new Date();
-const datePrefix = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
+// 使用本地时间生成 yyyyMMdd 前缀；computed 保证跨天后自动更新
+const datePrefix = computed(() => {
+  const now = new Date();
+  return `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
+});
 
 const releaseName = computed(() =>
   deployMode.value === "replace"
     ? stagedReleaseName.value.trim()
-    : `${datePrefix}-${featureName.value.trim()}`
+    : `${datePrefix.value}-${featureName.value.trim()}`
 );
 
 // 当前组的待替换发布
@@ -106,8 +108,8 @@ function selectGroup(groupId: string) {
     (item) => item.id === groupId
   );
   if (group) {
-    // 默认全选项目；备机同步每次进入组都默认 SSH 分发 zip
-    selectedProjectIds.value = group.projects.map((project) => project.id);
+    // 切换组时不自动全选，保留空选让用户手动勾选
+    selectedProjectIds.value = [];
     copyMode.value = "upload";
   }
   stagedReleaseName.value = "";
