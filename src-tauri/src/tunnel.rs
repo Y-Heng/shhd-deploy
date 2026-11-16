@@ -1,4 +1,4 @@
-//! 本地端口转发隧道：经跳板机把远端端口映射到 127.0.0.1，断线自动重连。
+//! 本地端口转发隧道：经跳板机映射远端端口，默认仅本机、可选 IPv4 监听，断线自动重连。
 
 use crate::config::{self, AppConfig, TunnelConfig};
 use crate::ssh::{self, SshConnection};
@@ -113,15 +113,16 @@ impl TunnelManager {
             return Ok(());
         }
 
-        // 先绑定本地端口，端口冲突仅更新状态，不抛到前端弹窗
-        let listener = match TcpListener::bind(("127.0.0.1", tunnel_config.local_port)).await {
+        // 先绑定本地地址，失败仅更新状态，不抛到前端弹窗
+        let listen_addr = tunnel_config.listen_addr();
+        let listener = match TcpListener::bind(listen_addr).await {
             Ok(listener) => listener,
-            Err(_) => {
+            Err(error) => {
                 self.report_static_status(
                     &app,
                     &tunnel_config.id,
                     "error",
-                    format!("本地端口 {} 被占用", tunnel_config.local_port),
+                    format!("无法监听 {}: {}", listen_addr, error),
                 )
                 .await;
                 return Ok(());
@@ -307,8 +308,8 @@ async fn supervise_tunnel(
             &status,
             "active",
             format!(
-                "127.0.0.1:{} -> {}:{}",
-                tunnel.local_port, tunnel.remote_host, tunnel.remote_port
+                "{} -> {}:{}",
+                tunnel.listen_addr(), tunnel.remote_host, tunnel.remote_port
             ),
             active_counter.load(Ordering::Relaxed),
             reconnects,
@@ -346,8 +347,8 @@ async fn supervise_tunnel(
                             &status,
                             "active",
                             format!(
-                                "127.0.0.1:{} -> {}:{}",
-                                tunnel.local_port, tunnel.remote_host, tunnel.remote_port
+                                "{} -> {}:{}",
+                                tunnel.listen_addr(), tunnel.remote_host, tunnel.remote_port
                             ),
                             active_now,
                             reconnects,

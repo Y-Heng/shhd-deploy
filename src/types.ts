@@ -40,6 +40,8 @@ export interface TunnelConfig {
   name: string;
   viaServerId: string;
   localPort: number;
+  /** 开启后监听所有 IPv4 网卡；旧配置默认仅本机 */
+  allowLan?: boolean;
   remoteHost: string;
   remotePort: number;
   autoStart: boolean;

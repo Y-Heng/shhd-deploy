@@ -907,6 +907,7 @@ async fn open_rdp(
                 name: format!("远程桌面-{}", server.name),
                 via_server_id: server.jump_server_id.clone().unwrap_or_default(),
                 local_port: port,
+                allow_lan: false,
                 remote_host: server.host.clone(),
                 remote_port: 3389,
                 auto_start: false,

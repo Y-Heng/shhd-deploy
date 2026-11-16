@@ -68,6 +68,9 @@ pub struct TunnelConfig {
     /// 经由哪台服务器转发（跳板机）
     pub via_server_id: String,
     pub local_port: u16,
+    /// 允许通过本机 IPv4 访问；默认仅监听回环地址
+    #[serde(default)]
+    pub allow_lan: bool,
     pub remote_host: String,
     pub remote_port: u16,
     /// 应用启动时自动开启
@@ -76,6 +79,17 @@ pub struct TunnelConfig {
     /// 分组名称（null 表示未分组）
     #[serde(default)]
     pub group: Option<String>,
+}
+
+impl TunnelConfig {
+    pub fn listen_addr(&self) -> std::net::SocketAddrV4 {
+        let ip = if self.allow_lan {
+            std::net::Ipv4Addr::UNSPECIFIED
+        } else {
+            std::net::Ipv4Addr::LOCALHOST
+        };
+        std::net::SocketAddrV4::new(ip, self.local_port)
+    }
 }
 
 /// 后端部署项目（一个 IIS 站点 / 应用目录）
@@ -581,6 +595,7 @@ fn default_template() -> AppConfig {
                 name: "RDP-WindowsA".into(),
                 via_server_id: "linux-proxy".into(),
                 local_port: 13389,
+                allow_lan: false,
                 remote_host: "172.16.48.5".into(),
                 remote_port: 3389,
                 auto_start: false,
@@ -591,6 +606,7 @@ fn default_template() -> AppConfig {
                 name: "生产MySQL".into(),
                 via_server_id: "linux-proxy".into(),
                 local_port: 13306,
+                allow_lan: false,
                 remote_host: "改成MySQL内网地址".into(),
                 remote_port: 3306,
                 auto_start: false,
@@ -601,6 +617,7 @@ fn default_template() -> AppConfig {
                 name: "生产Redis".into(),
                 via_server_id: "linux-proxy".into(),
                 local_port: 16379,
+                allow_lan: false,
                 remote_host: "改成Redis内网地址".into(),
                 remote_port: 6379,
                 auto_start: false,
@@ -698,5 +715,50 @@ fn default_template() -> AppConfig {
         ],
         sftp_shortcuts: default_sftp_shortcuts(),
         sftp_local_shortcuts: vec![],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TunnelConfig;
+    use std::net::{Ipv4Addr, SocketAddr};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::time::{timeout, Duration};
+
+    #[tokio::test]
+    async fn tunnel_binding_respects_lan_setting_and_legacy_config() {
+        let legacy = serde_json::json!({
+            "id": "test", "name": "test", "viaServerId": "jump",
+            "localPort": 0, "remoteHost": "192.0.2.1", "remotePort": 3306
+        });
+        let mut tunnel: TunnelConfig = serde_json::from_value(legacy).unwrap();
+        for (allow_lan, expected_ip) in [
+            (false, Ipv4Addr::LOCALHOST),
+            (true, Ipv4Addr::UNSPECIFIED),
+            (false, Ipv4Addr::LOCALHOST),
+        ] {
+            if allow_lan {
+                let mut value = serde_json::to_value(&tunnel).unwrap();
+                value["allowLan"] = true.into();
+                tunnel = serde_json::from_value(value).unwrap();
+            } else if tunnel.allow_lan {
+                tunnel.allow_lan = false;
+            }
+            let listener = TcpListener::bind(tunnel.listen_addr()).await.unwrap();
+            let bound = listener.local_addr().unwrap();
+            assert_eq!(bound.ip(), expected_ip);
+            let client_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, bound.port()));
+            timeout(Duration::from_secs(5), async {
+                let mut client = TcpStream::connect(client_addr).await.unwrap();
+                let (mut server, _) = listener.accept().await.unwrap();
+                client.write_all(b"tunnel").await.unwrap();
+                let mut received = [0; 6];
+                server.read_exact(&mut received).await.unwrap();
+                assert_eq!(&received, b"tunnel");
+            })
+            .await
+            .unwrap();
+        }
     }
 }

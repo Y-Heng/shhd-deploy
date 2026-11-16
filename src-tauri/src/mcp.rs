@@ -451,6 +451,7 @@ async fn call_tool(app: &AppHandle, tool_name: &str, arguments: Value) -> Result
                         "tunnelId": tunnel.id,
                         "name": tunnel.name,
                         "localPort": tunnel.local_port,
+                        "allowLan": tunnel.allow_lan,
                         "remote": format!("{}:{}", tunnel.remote_host, tunnel.remote_port),
                         "state": status.map(|item| item.state.clone()).unwrap_or_else(|| "stopped".into()),
                     })

@@ -39,6 +39,7 @@ const editForm = reactive<TunnelConfig>({
   name: "",
   viaServerId: "",
   localPort: 10000,
+  allowLan: false,
   remoteHost: "",
   remotePort: 3306,
   autoStart: false,
@@ -172,7 +173,8 @@ async function commitRenameGroup() {
 
 function tunnelSubtitle(tunnel: TunnelConfig): string {
   const viaName = serverNameById(tunnel.viaServerId);
-  return `127.0.0.1:${tunnel.localPort} → ${tunnel.remoteHost}:${tunnel.remotePort} · via ${viaName}`;
+  const listenHost = tunnel.allowLan ? "0.0.0.0" : "127.0.0.1";
+  return `${listenHost}:${tunnel.localPort} → ${tunnel.remoteHost}:${tunnel.remotePort} · via ${viaName}`;
 }
 
 async function toggleTunnel(tunnel: TunnelConfig) {
@@ -207,6 +209,7 @@ function openAddDialog() {
     name: "",
     viaServerId: config.value?.servers[0]?.id ?? "",
     localPort: 10000,
+    allowLan: false,
     remoteHost: "",
     remotePort: 3306,
     autoStart: false,
@@ -219,6 +222,7 @@ function openEditDialog(tunnel: TunnelConfig) {
   isNewTunnel.value = false;
   Object.assign(editForm, JSON.parse(JSON.stringify(tunnel)));
   if (editForm.group === undefined) editForm.group = null;
+  editForm.allowLan = tunnel.allowLan ?? false;
   dialogVisible.value = true;
 }
 
@@ -240,7 +244,7 @@ async function saveTunnel() {
   }
   await api.saveConfig(config.value);
   dialogVisible.value = false;
-  ElMessage.success("已保存");
+  ElMessage.success(isRunning(clone.id) ? "已保存，请停止后重新启动隧道以应用配置" : "已保存");
 }
 
 async function removeTunnel(tunnel: TunnelConfig) {
@@ -548,6 +552,17 @@ function isDropHint(groupName: string, itemId: string | undefined, place: string
         <el-form-item label="本地端口">
           <el-input-number v-model="editForm.localPort" :min="1" :max="65535" />
         </el-form-item>
+        <el-form-item label="局域网访问">
+          <el-switch v-model="editForm.allowLan" />
+          <span class="form-hint">开启后监听 0.0.0.0，允许通过本机 IPv4 访问</span>
+        </el-form-item>
+        <el-alert
+          v-if="editForm.allowLan"
+          title="将向所有 IPv4 网卡开放此端口，请仅在可信网络使用，并通过防火墙限制来源。保存后需停止并重新启动隧道。"
+          type="warning"
+          :closable="false"
+          show-icon
+        />
         <el-form-item label="远端地址">
           <el-input
             v-model="editForm.remoteHost"
